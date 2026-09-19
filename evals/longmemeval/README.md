@@ -33,6 +33,54 @@ python evals/longmemeval/run.py --split s --types knowledge-update --arms base,i
 
 Results are cached per question under `results/` and the report is recomputed from the cache.
 
+## Results so far (2026-09-19)
+
+Same host, same answer model, same grader in both arms. `base` is the host alone; `inv` is the host with
+the layer in front, serving in annotate mode unless stated.
+
+**Oracle split, knowledge-update, 78 questions, Sonnet 5 answering**
+
+| serving mode of the layer | inv | base |
+|---|---|---|
+| hide dead and reviewed facts (the first, wrong default) | 78.2% | 97.4% |
+| hide dead only | 91.0% | 97.4% |
+| annotate: keep every fact, label retired ones with their replacement | 94.9% | 97.4% |
+| annotate, Haiku 4.5 answering | 93.6% | 93.6% |
+
+The two remaining losses in annotate mode: one response contained the right answer in parentheses and the
+grader said no; one uncertain fact was unlabelled and the model hedged. The oracle split gives only the
+evidence sessions with dates, so a strong answer model resolves updates itself and the layer has nothing to add.
+
+**Oracle split, the other 422 questions (regression check), annotate mode**
+
+| type | n | base | inv |
+|---|---|---|---|
+| temporal-reasoning | 133 | 84.2% | 82.0% |
+| multi-session | 133 | 72.2% | 72.9% |
+| single-session-user | 70 | 95.7% | 97.1% |
+| single-session-assistant | 56 | 3.6% | 5.4% |
+| single-session-preference | 30 | 80.0% | 76.7% |
+| all | 422 | 71.3% | 71.1% |
+
+8 gained, 9 lost: noise. (single-session-assistant is near zero in both arms because this host stores
+user turns only.)
+
+**S split, knowledge-update, 78 questions, ~244 user turns and ~1,000 facts per question**
+
+| k served | base | inv | questions where only the old value was retrieved | base on those |
+|---|---|---|---|---|
+| 10 | 94.9% | 93.6% | few | |
+| 1 | 47.4% | pending (TypeSafe credits ran out) | 30 of 78 | 4 of 30 |
+
+At k=10 both old and new values usually rank into the top ten, because they are near-identical text, and the
+answer model resolves them by date. At k=1 retrieval returns only the old value on 30 of 78 questions and the
+baseline answers 4 of those. That slice is where the layer's annotation carries the replacement into the prompt;
+the treatment number for it is the one still to run, with k = 3 and 5.
+
+**What the numbers say so far.** As a layer the product cannot make the host worse when it serves in annotate
+mode, and the regression set confirms that. It has not yet shown a gain on a public benchmark; the gain, if it
+exists, lives where retrieval serves a stale fact without its update, which the k sweep isolates.
+
 ## What to look at
 
 - **Knowledge-update accuracy**, the category the layer is for.

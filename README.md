@@ -231,6 +231,10 @@ One memory checked against one event: $0.00006. With more than 200 memories a ch
 
 In practice the LLM columns are never paid. The check is skipped instead, and the cost shows up later as a customer quoted last quarter's price or an engineer paged for a service they handed off months ago.
 
+## Benchmarks
+
+Two kinds. The 157-case labelled invalidation set (above) measures the votes. [LongMemEval](evals/longmemeval/README.md) measures the effect on an agent: the same memory host, the same answer model and the benchmark's own grader, with and without the layer. On the 422 non-update questions the layer changes nothing (71.1% vs 71.3%). On knowledge-update questions with everything retrieved it is level with the host. The case it exists for is when retrieval returns the old value without the update; at k=1 that happens on 30 of 78 questions and the host alone answers 4 of them. The treatment number for that slice is pending.
+
 ## Scaling
 
 Checking every memory against every event is memories × events work. At 20,000 memories one event costs $0.11 and 9 seconds, so at hundreds of events a day eager checking stops making sense. invalidate does not answer that with top-k by similarity, because the event that retires "we use Postgres" is "our database of choice changed" and similarity ranks that pair low. It changes when the check runs instead.
