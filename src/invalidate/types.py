@@ -45,6 +45,7 @@ class Disposition(str, enum.Enum):
     SUPERSEDED = "superseded"
     UNCERTAIN = "uncertain"
     HYPOTHETICAL = "hypothetical"  # event bears on the memory but is a question/plan/proposal: logged, never written
+    DIRECTIVE = "directive"        # event is an instruction to the system about what to record: logged, never written
 
 
 @dataclass
@@ -93,6 +94,7 @@ class Votes:
     still_true: float
     replaces: float
     hypothetical: float  # event-level; repeated on every pair for auditability
+    directive: float = 0.0  # event-level: the event commands a system/assistant about what to store or believe
 
 
 @dataclass
@@ -140,7 +142,8 @@ class ObserveReport:
 
     def summary(self) -> str:
         parts = [f"{self.judged} judged"]
-        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.HYPOTHETICAL, Disposition.CONFIRMED):
+        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.HYPOTHETICAL,
+                  Disposition.DIRECTIVE, Disposition.CONFIRMED):
             n = self.count(d)
             if n:
                 parts.append(f"{n} {d.value}")

@@ -255,7 +255,7 @@ CASES: list[dict] = [
     _c("un_12", "unrelated",
        "User prefers Postgres for new services.", "preference",
        "Note to self: the user's database of choice changed. They're all-in on SQLite now.", "chat",
-       "superseded", "Hard negative: no shared keyword with the memory beyond 'Postgres'-free wording, but it is a real replacement."),
+       "superseded", "Hard negative: never names Postgres, so keyword overlap is near zero, but it states a real replacement."),
 
     # ------------------------------------------------------------------ transient
     _c("tr_01", "transient",

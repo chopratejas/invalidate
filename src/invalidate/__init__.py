@@ -9,6 +9,7 @@
 Verbatim in, status out. Code owns the write; Jev only votes.
 """
 from .engine import Invalidate
+from .env import load_dotenv
 from .judge import JevJudge, Judge, JudgeMisaligned, MissingAPIKey
 from .policy import Policy
 from .store import SQLiteStore, Store
@@ -28,5 +29,5 @@ __version__ = "0.1.0"
 __all__ = [
     "Invalidate", "Policy", "Status", "Disposition", "Memory", "Event", "Verdict", "Votes",
     "ObserveReport", "RecallReport", "Recalled", "Store", "SQLiteStore", "Judge", "JevJudge",
-    "MissingAPIKey", "JudgeMisaligned", "__version__",
+    "MissingAPIKey", "JudgeMisaligned", "load_dotenv", "__version__",
 ]

@@ -9,8 +9,8 @@ D = Disposition
 S = Status
 
 
-def v(bears=0.9, still_true=0.9, replaces=0.0, hypothetical=0.0) -> Votes:
-    return Votes(bears=bears, still_true=still_true, replaces=replaces, hypothetical=hypothetical)
+def v(bears=0.9, still_true=0.9, replaces=0.0, hypothetical=0.0, directive=0.0) -> Votes:
+    return Votes(bears=bears, still_true=still_true, replaces=replaces, hypothetical=hypothetical, directive=directive)
 
 
 # --------------------------------------------------------------------------- defaults
@@ -19,7 +19,7 @@ def v(bears=0.9, still_true=0.9, replaces=0.0, hypothetical=0.0) -> Votes:
 def test_default_thresholds_and_batching():
     p = Policy()
     assert (p.bears_min, p.confirm_min, p.contradict_max, p.replace_min, p.hypothetical_max) == (
-        0.5, 0.7, 0.3, 0.6, 0.7,
+        0.6, 0.6, 0.4, 0.6, 0.7,
     )
     assert p.relevance_min == 0.5
     assert p.judge_statuses == frozenset({S.ACTIVE, S.NEEDS_REVIEW, S.FROZEN})
@@ -51,8 +51,22 @@ def test_dispose_confirmed_when_bearing_and_still_true_high():
     assert Policy().dispose(v(bears=0.9, still_true=0.95)) is D.CONFIRMED
 
 
-def test_dispose_confirmed_is_not_downgraded_by_hypothetical():
-    assert Policy().dispose(v(bears=0.9, still_true=0.95, hypothetical=1.0)) is D.CONFIRMED
+def test_dispose_hypothetical_beats_confirmed():
+    # A question never writes, not even a confirmation (it must not resolve needs_review or bump p_true).
+    assert Policy().dispose(v(bears=0.9, still_true=0.95, hypothetical=1.0)) is D.HYPOTHETICAL
+
+
+def test_dispose_directive_beats_everything_but_unrelated():
+    assert Policy().dispose(v(bears=0.9, still_true=0.95, directive=0.9)) is D.DIRECTIVE
+    assert Policy().dispose(v(bears=0.9, still_true=0.05, replaces=0.9, directive=0.9)) is D.DIRECTIVE
+    assert Policy().dispose(v(bears=0.9, still_true=0.05, hypothetical=0.9, directive=0.9)) is D.DIRECTIVE
+    assert Policy().dispose(v(bears=0.1, still_true=0.05, directive=0.9)) is D.UNRELATED
+
+
+def test_boundary_directive_max_is_inclusive():
+    p = Policy()
+    assert p.dispose(v(still_true=0.1, replaces=0.9, directive=0.7)) is D.DIRECTIVE
+    assert p.dispose(v(still_true=0.1, replaces=0.9, directive=0.6999)) is D.SUPERSEDED
 
 
 def test_dispose_confirmed_ignores_replaces():
@@ -93,20 +107,20 @@ def test_dispose_hypothetical_makes_uncertain_hypothetical():
 
 def test_boundary_bears_min_is_inclusive():
     p = Policy()
-    assert p.dispose(v(bears=0.5, still_true=0.95)) is D.CONFIRMED
-    assert p.dispose(v(bears=0.4999, still_true=0.95)) is D.UNRELATED
+    assert p.dispose(v(bears=0.6, still_true=0.95)) is D.CONFIRMED
+    assert p.dispose(v(bears=0.5999, still_true=0.95)) is D.UNRELATED
 
 
 def test_boundary_confirm_min_is_inclusive():
     p = Policy()
-    assert p.dispose(v(still_true=0.7)) is D.CONFIRMED
-    assert p.dispose(v(still_true=0.6999)) is D.UNCERTAIN
+    assert p.dispose(v(still_true=0.6)) is D.CONFIRMED
+    assert p.dispose(v(still_true=0.5999)) is D.UNCERTAIN
 
 
 def test_boundary_contradict_max_is_inclusive():
     p = Policy()
-    assert p.dispose(v(still_true=0.3, replaces=0.0)) is D.CONTRADICTED
-    assert p.dispose(v(still_true=0.3001, replaces=0.0)) is D.UNCERTAIN
+    assert p.dispose(v(still_true=0.4, replaces=0.0)) is D.CONTRADICTED
+    assert p.dispose(v(still_true=0.4001, replaces=0.0)) is D.UNCERTAIN
 
 
 def test_boundary_replace_min_is_inclusive():
@@ -123,7 +137,8 @@ def test_boundary_hypothetical_max_is_inclusive():
 
 def test_boundary_extreme_probabilities():
     p = Policy()
-    assert p.dispose(v(bears=1.0, still_true=1.0, replaces=1.0, hypothetical=1.0)) is D.CONFIRMED
+    assert p.dispose(v(bears=1.0, still_true=1.0, replaces=1.0, hypothetical=1.0)) is D.HYPOTHETICAL
+    assert p.dispose(v(bears=1.0, still_true=1.0, replaces=1.0, hypothetical=0.0)) is D.CONFIRMED
     assert p.dispose(v(bears=1.0, still_true=0.0, replaces=1.0, hypothetical=0.0)) is D.SUPERSEDED
     assert p.dispose(v(bears=1.0, still_true=0.0, replaces=0.0, hypothetical=0.0)) is D.CONTRADICTED
     assert p.dispose(v(bears=0.0, still_true=0.0, replaces=0.0, hypothetical=0.0)) is D.UNRELATED
@@ -161,7 +176,7 @@ def test_custom_thresholds_can_make_everything_bear():
 def _expected(status: S, d: D, review_resolves: bool) -> S:
     if status is S.FROZEN or status in (S.CONTRADICTED, S.SUPERSEDED, S.EXPIRED, S.DELETED):
         return status
-    if d in (D.UNRELATED, D.HYPOTHETICAL):
+    if d in (D.UNRELATED, D.HYPOTHETICAL, D.DIRECTIVE):
         return status
     if d is D.CONFIRMED:
         if status is S.ACTIVE:

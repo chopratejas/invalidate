@@ -13,13 +13,15 @@ from .types import Disposition, Status, Votes
 @dataclass
 class Policy:
     # --- vote thresholds --------------------------------------------------
-    bears_min: float = 0.5
+    # Defaults were chosen by sweeping evals/cases.py (157 labeled cases) for the highest strict
+    # accuracy that does not add a single false invalidation. Re-run `evals/run_eval.py` on your data.
+    bears_min: float = 0.6
     """Below this, the event is treated as unrelated to the memory: no write."""
 
-    confirm_min: float = 0.7
+    confirm_min: float = 0.6
     """still_true at or above this (and bearing) confirms the memory."""
 
-    contradict_max: float = 0.3
+    contradict_max: float = 0.4
     """still_true at or below this (and bearing) contradicts the memory."""
 
     replace_min: float = 0.6
@@ -28,6 +30,11 @@ class Policy:
     hypothetical_max: float = 0.7
     """If the event is judged a question/proposal/plan at or above this, any non-confirming
     vote becomes HYPOTHETICAL: logged for the audit trail, never written to status."""
+
+    directive_max: float = 0.7
+    """If the event is judged to be a command to the system/assistant about what to record, override, or
+    believe (rather than a report of something in the world) at or above this, any non-unrelated vote
+    becomes DIRECTIVE: logged, never written. Prompt-injection defense; source trust stays with the caller."""
 
     relevance_min: float = 0.5
     """recall(): minimum relevance probability to return a memory."""
@@ -51,10 +58,13 @@ class Policy:
     def dispose(self, v: Votes) -> Disposition:
         if v.bears < self.bears_min:
             return Disposition.UNRELATED
-        if v.still_true >= self.confirm_min:
-            return Disposition.CONFIRMED
+        # Form checks come before content checks: a command or a question never writes, not even a confirmation.
+        if v.directive >= self.directive_max:
+            return Disposition.DIRECTIVE
         if v.hypothetical >= self.hypothetical_max:
             return Disposition.HYPOTHETICAL
+        if v.still_true >= self.confirm_min:
+            return Disposition.CONFIRMED
         if v.still_true <= self.contradict_max:
             if v.replaces >= self.replace_min:
                 return Disposition.SUPERSEDED
@@ -67,7 +77,7 @@ class Policy:
             return status  # judged for the audit log, never flipped
         if status not in (Status.ACTIVE, Status.NEEDS_REVIEW):
             return status
-        if d in (Disposition.UNRELATED, Disposition.HYPOTHETICAL):
+        if d in (Disposition.UNRELATED, Disposition.HYPOTHETICAL, Disposition.DIRECTIVE):
             return status
         if d is Disposition.CONFIRMED:
             return Status.ACTIVE if (status is Status.ACTIVE or self.review_resolves) else status

@@ -25,6 +25,10 @@ from .types import (
 
 Transition = Callable[[Memory, Verdict], None]
 
+_CONTENT_VERDICTS = frozenset(
+    {Disposition.CONFIRMED, Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN}
+)
+
 
 class Invalidate:
     """Drop this in front of any memory store.
@@ -60,6 +64,17 @@ class Invalidate:
         if self._judge is None:
             self._judge = JevJudge(api_key=self._api_key, model=self._model)
         return self._judge
+
+    def check(self) -> str:
+        """Fail fast: build the judge (raises MissingAPIKey) and confirm the API answers. Returns the model id."""
+        judge = self.judge
+        client = getattr(judge, "client", None)
+        models = getattr(client, "models", None)
+        if models is not None and hasattr(models, "list"):
+            listed = models.list()
+            names = [getattr(m, "name", str(m)) for m in getattr(listed, "models", listed)]
+            return getattr(judge, "model", None) or (names[0] if names else "unknown")
+        return getattr(judge, "model", None) or "unknown"
 
     # -- write side -------------------------------------------------------------
     def remember(
@@ -185,7 +200,9 @@ class Invalidate:
 
     def _apply(self, m: Memory, v: Verdict) -> None:
         m.last_checked = v.created_at
-        if v.disposition is not Disposition.UNRELATED:
+        if v.disposition in _CONTENT_VERDICTS:
+            # Only a report about the world moves belief. Questions and commands are logged in the
+            # verdict history but leave p_true alone.
             m.p_true = v.votes.still_true
         if v.to_status != m.status:
             m.status = v.to_status
@@ -265,6 +282,9 @@ class Invalidate:
     def supersede(self, memory_id: str, *, by: str) -> Memory:
         """Link a superseded memory to its verbatim successor (a memory you `remember`ed)."""
         m = self.get(memory_id)
+        if by == memory_id:
+            raise ValueError("a memory cannot supersede itself")
+        self.get(by)  # KeyError if the successor does not exist
         m.superseded_by = by
         m.status = Status.SUPERSEDED
         m.updated_at = now()

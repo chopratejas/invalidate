@@ -223,10 +223,20 @@ def judge_all(judge, requests: list[list[dict]], workers: int) -> tuple[list[dic
 
 
 # ----------------------------------------------------------------------------- scoring
+# The label vocabulary is unrelated/confirmed/contradicted/superseded/uncertain. The policy's
+# HYPOTHETICAL disposition (a question/plan: logged, never written) is scored as "uncertain",
+# the closest "do not flip" label.
+_LABEL = {"hypothetical": "uncertain"}
+
+
+def _label(d) -> str:
+    return _LABEL.get(d.value, d.value)
+
+
 def predict(policy: Policy, rec: dict) -> str:
     if rec.get("votes") is None:
         return "error"
-    return policy.dispose(Votes(**rec["votes"])).value
+    return _label(policy.dispose(Votes(**rec["votes"])))
 
 
 def score(policy: Policy, records: list[dict]) -> dict:
@@ -359,7 +369,7 @@ def sweep(records: list[dict], base: Policy) -> dict:
         p = Policy(**kw)
         strict = lenient = fi = 0
         for v, e, a, ai in zip(votes, expected, accept, allow_inv):
-            d = p.dispose(v).value
+            d = _label(p.dispose(v))
             strict += d == e
             lenient += d in a
             fi += (d in INVALIDATING) and not ai

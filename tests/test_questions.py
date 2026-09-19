@@ -22,15 +22,15 @@ def _text(n: Noul) -> str:
 
 
 @pytest.mark.parametrize("n", [0, 1, 2, 5, 20])
-def test_observe_questions_count_is_3n_plus_1(n: int):
+def test_observe_questions_count_is_3n_plus_2(n: int):
     qs = Q.observe_questions(n)
-    assert len(qs) == 3 * n + 1
+    assert len(qs) == 3 * n + 2
     assert all(isinstance(q, Noul) for q in qs.values())
 
 
 def test_observe_questions_ids_are_exactly_as_expected():
     qs = Q.observe_questions(3)
-    expected = {Q.HYPOTHETICAL}
+    expected = {Q.HYPOTHETICAL, Q.DIRECTIVE}
     for i in range(3):
         expected |= {f"{Q.BEARS}_{i}", f"{Q.STILL_TRUE}_{i}", f"{Q.REPLACES}_{i}"}
     assert set(qs) == expected
@@ -42,8 +42,8 @@ def test_observe_questions_hypothetical_present_exactly_once():
     assert Q.HYPOTHETICAL in qs
 
 
-def test_observe_questions_zero_memories_only_hypothetical():
-    assert list(Q.observe_questions(0)) == [Q.HYPOTHETICAL]
+def test_observe_questions_zero_memories_only_event_level():
+    assert sorted(Q.observe_questions(0)) == sorted([Q.DIRECTIVE, Q.HYPOTHETICAL])
 
 
 @pytest.mark.parametrize("prefix", [Q.BEARS, Q.STILL_TRUE, Q.REPLACES])
@@ -160,7 +160,7 @@ def test_state_never_leaks_ids_timestamps_status_or_metadata():
 def test_observe_questions_are_json_serialisable():
     payload = json.dumps(_dump(Q.observe_questions(5)))
     back = json.loads(payload)
-    assert len(back) == 16
+    assert len(back) == 17
     assert back[Q.HYPOTHETICAL]["type"] == "noul"
 
 

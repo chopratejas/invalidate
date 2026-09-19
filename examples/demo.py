@@ -23,6 +23,7 @@ FACTS = [
 
 def main() -> int:
     mem = Invalidate(tempfile.mktemp(suffix=".db", prefix="invalidate-demo-"))
+    mem.judge  # fail fast on a missing TYPESAFE_API_KEY; remember() alone never needs one
 
     # 1. remember: verbatim, no model call, no embeddings.
     for fact, kind, source in FACTS:
@@ -32,7 +33,7 @@ def main() -> int:
     # 2. observe: every live memory is judged against the event; the policy applies the write.
     for text in ("Postgres was down for an hour this morning", "we migrated to SQLite last Tuesday"):
         print(f"\nobserve: {text!r}")
-        report = mem.observe(text, source="slack")
+        report = mem.observe(text, source="slack", remember_successor=True)
         for v in report.changed:
             print(f"  {mem.get(v.memory_id).fact!r}: {v.from_status.value} -> {v.to_status.value}"
                   f"  (still_true={v.votes.still_true:.2f}, replaces={v.votes.replaces:.2f})")

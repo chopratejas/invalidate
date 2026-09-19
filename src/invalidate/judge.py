@@ -52,9 +52,13 @@ class JevJudge:
 
             key = api_key or os.environ.get("TYPESAFE_API_KEY")
             if not key:
+                from .env import load_dotenv
+
+                key = load_dotenv().get("TYPESAFE_API_KEY") or os.environ.get("TYPESAFE_API_KEY")
+            if not key:
                 raise MissingAPIKey(
-                    "TYPESAFE_API_KEY is not set. Create one at https://console.typesafe.ai/ and export it, "
-                    "or pass api_key= / a Judge of your own."
+                    "TYPESAFE_API_KEY is not set. Create one at https://console.typesafe.ai/, then export it or put "
+                    "TYPESAFE_API_KEY=... in a .env file in the working directory, or pass api_key=."
                 )
             client = TypeSafeClient(api_key=key, model=model, timeout=timeout)
         self.client = client
@@ -66,12 +70,14 @@ class JevJudge:
         resp = self.client.system_one(Q.observe_state(event, memories), Q.observe_questions(len(memories)))
         a = resp.answers
         hyp = _p(a[Q.HYPOTHETICAL])
+        directive = _p(a[Q.DIRECTIVE])
         votes = [
             Votes(
                 bears=_p(a[f"{Q.BEARS}_{i}"]),
                 still_true=_p(a[f"{Q.STILL_TRUE}_{i}"]),
                 replaces=_p(a[f"{Q.REPLACES}_{i}"]),
                 hypothetical=hyp,
+                directive=directive,
             )
             for i in range(len(memories))
         ]

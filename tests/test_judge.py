@@ -41,7 +41,7 @@ def _mems(n: int) -> list[Memory]:
 
 
 def test_observe_maps_votes_in_order_and_copies_hypothetical():
-    answers = {Q.HYPOTHETICAL: 0.33}
+    answers = {Q.HYPOTHETICAL: 0.33, Q.DIRECTIVE: 0.11}
     for i in range(3):
         answers[f"{Q.BEARS}_{i}"] = 0.1 * (i + 1)
         answers[f"{Q.STILL_TRUE}_{i}"] = 0.2 * (i + 1)
@@ -60,8 +60,8 @@ def test_observe_maps_votes_in_order_and_copies_hypothetical():
         assert v.hypothetical == pytest.approx(0.33)
 
 
-def test_observe_sends_state_and_3n_plus_1_questions_to_client():
-    answers = {Q.HYPOTHETICAL: 0.0}
+def test_observe_sends_state_and_3n_plus_2_questions_to_client():
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0}
     for i in range(2):
         answers.update({f"{Q.BEARS}_{i}": 0.5, f"{Q.STILL_TRUE}_{i}": 0.5, f"{Q.REPLACES}_{i}": 0.5})
     client = StubClient(answers)
@@ -73,11 +73,11 @@ def test_observe_sends_state_and_3n_plus_1_questions_to_client():
     state, questions = client.calls[0]
     assert state == Q.observe_state(e, ms)
     assert set(questions) == set(Q.observe_questions(2))
-    assert len(questions) == 7
+    assert len(questions) == 8
 
 
 def test_observe_propagates_usage_and_model():
-    answers = {Q.HYPOTHETICAL: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
     judge = JevJudge(client=StubClient(answers, input_tokens=456, model="jev-9"))
     batch = judge.observe(Event(text="e"), _mems(1))
     assert batch.usage == JudgeResult(input_tokens=456, model="jev-9")
@@ -85,14 +85,14 @@ def test_observe_propagates_usage_and_model():
 
 
 def test_observe_missing_usage_and_model_default_to_zero_and_none():
-    answers = {Q.HYPOTHETICAL: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
     judge = JevJudge(client=StubClient(answers, model=None, with_usage=False))
     batch = judge.observe(Event(text="e"), _mems(1))
     assert batch.usage == JudgeResult(0, None)
 
 
 def test_observe_usage_none_tokens_becomes_zero():
-    answers = {Q.HYPOTHETICAL: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0, f"{Q.BEARS}_0": 1.0, f"{Q.STILL_TRUE}_0": 1.0, f"{Q.REPLACES}_0": 0.0}
     judge = JevJudge(client=StubClient(answers, input_tokens=None))
     assert judge.observe(Event(text="e"), _mems(1)).usage.input_tokens == 0
 
@@ -106,10 +106,10 @@ def test_observe_empty_memories_short_circuits_without_calling_client():
 
 
 def test_observe_noul_is_coerced_to_float():
-    answers = {Q.HYPOTHETICAL: "0.25", f"{Q.BEARS}_0": 1, f"{Q.STILL_TRUE}_0": "0.5", f"{Q.REPLACES}_0": 0}
+    answers = {Q.HYPOTHETICAL: "0.25", Q.DIRECTIVE: "0.1", f"{Q.BEARS}_0": 1, f"{Q.STILL_TRUE}_0": "0.5", f"{Q.REPLACES}_0": 0}
     v = JevJudge(client=StubClient(answers)).observe(Event(text="e"), _mems(1)).votes[0]
-    assert v == Votes(bears=1.0, still_true=0.5, replaces=0.0, hypothetical=0.25)
-    assert all(isinstance(x, float) for x in (v.bears, v.still_true, v.replaces, v.hypothetical))
+    assert v == Votes(bears=1.0, still_true=0.5, replaces=0.0, hypothetical=0.25, directive=0.1)
+    assert all(isinstance(x, float) for x in (v.bears, v.still_true, v.replaces, v.hypothetical, v.directive))
 
 
 # --------------------------------------------------------------------------- recall
@@ -139,7 +139,8 @@ def test_recall_empty_memories_short_circuits_without_calling_client():
 # --------------------------------------------------------------------------- construction / API key
 
 
-def test_missing_api_key_raises_when_no_key_and_no_client(monkeypatch):
+def test_missing_api_key_raises_when_no_key_and_no_client(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with pytest.raises(MissingAPIKey) as ei:
         JevJudge()
@@ -147,7 +148,8 @@ def test_missing_api_key_raises_when_no_key_and_no_client(monkeypatch):
     assert isinstance(ei.value, RuntimeError)
 
 
-def test_empty_api_key_string_is_treated_as_missing(monkeypatch):
+def test_empty_api_key_string_is_treated_as_missing(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with pytest.raises(MissingAPIKey):
         JevJudge(api_key="")
