@@ -117,7 +117,11 @@ class _Record:
     """Duck-typed stand-in for `agent_memory_client.models.MemoryRecord`: what `create_long_term_memory`
     touches is `.id`, `.namespace` and `.model_dump(exclude_none=True, mode="json")`."""
 
+    _DEFAULTS = {"id": None, "text": "", "namespace": None, "user_id": None, "session_id": None,
+                 "topics": None, "entities": None, "memory_type": "semantic", "discrete_memory_extracted": "t"}
+
     def __init__(self, **fields: Any) -> None:
+        self.__dict__.update(self._DEFAULTS)
         self.__dict__.update(fields)
 
     def model_dump(self, *, exclude_none: bool = False, mode: str = "python") -> dict[str, Any]:
