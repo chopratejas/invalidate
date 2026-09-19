@@ -22,8 +22,21 @@ REMEMBER_MIN = 0.6
 
 
 def sentences(text: str) -> list[str]:
+    """Split into sentences, then split compound sentences on ', and ' / '; ' so each stored fact is atomic."""
     parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
-    return [p.strip() for p in parts if len(p.strip()) >= 8][:12]
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if len(p) < 8:
+            continue
+        clauses = re.split(r",\s+and\s+|;\s+|,\s+but\s+", p)
+        if len(clauses) > 1 and all(len(c.strip()) >= 12 for c in clauses):
+            for c in clauses:
+                c = c.strip().rstrip(".")
+                out.append(c[0].upper() + c[1:] + ".")
+        else:
+            out.append(p)
+    return out[:12]
 
 
 def _select_q(i: int) -> Noul:
@@ -84,6 +97,14 @@ def turn(facts: list[dict[str, Any]], text: str, judge: Judge, client: Any, poli
 
     cost = rep.cost_usd if rep else 0.0
     requests = (rep.requests if rep else 0) + 1
+    pol = mem.policy
+    event_form = None
+    if rep and rep.verdicts:
+        v0 = rep.verdicts[0].votes
+        if v0.directive >= pol.directive_max:
+            event_form = "directive"
+        elif v0.hypothetical >= pol.hypothetical_max:
+            event_form = "hypothetical"
     changes = []
     if rep:
         for v in rep.verdicts:
@@ -115,7 +136,8 @@ def turn(facts: list[dict[str, Any]], text: str, judge: Judge, client: Any, poli
                                             (len(rows) + [n.id for n in new_facts].index(cur.superseded_by) if cur.superseded_by in [n.id for n in new_facts] else None))})
     mem.close()
     return {
-        "reply": compose_reply(out_facts, changes, [f["fact"] for f in out_facts if f["new"]]),
+        "reply": compose_reply(out_facts, changes, [f["fact"] for f in out_facts if f["new"]], event_form),
+        "event_form": event_form,
         "facts": out_facts,
         "changes": changes,
         "selected": [{"sentence": s, "p": round(p, 2)} for s, p in selected],
@@ -124,10 +146,15 @@ def turn(facts: list[dict[str, Any]], text: str, judge: Judge, client: Any, poli
     }
 
 
-def compose_reply(facts: list[dict[str, Any]], changes: list[dict[str, Any]], new: list[str]) -> str:
+def compose_reply(facts: list[dict[str, Any]], changes: list[dict[str, Any]], new: list[str],
+                  event_form: str | None = None) -> str:
     dead = [c for c in changes if c["to"] in ("superseded", "contradicted")]
     review = [c for c in changes if c["to"] == "needs_review"]
     form = [c for c in changes if c["disposition"] in ("hypothetical", "directive")]
+    if event_form == "directive":
+        form.append({"disposition": "directive"})
+    if event_form == "hypothetical":
+        form.append({"disposition": "hypothetical"})
     parts = []
     if new:
         parts.append("Remembered " + "; ".join(f"“{n}”" for n in new) + ".")
