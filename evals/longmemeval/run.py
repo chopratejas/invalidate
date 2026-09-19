@@ -320,6 +320,9 @@ def run_question(q: dict, arm: str, k: int, models: Models, policy_kw: dict, hos
     return {
         "question_id": q["question_id"], "type": q["question_type"], "arm": arm, "correct": correct,
         "response": response, "answer": q["answer"], "n_turns": n_turns, "served": [r["id"] for r in rows],
+        "served_rows": [{"id": r["id"], "date": r["date"], "has_answer": r["has_answer"], "note": r.get("note"),
+                         "text": r["text"][:120]} for r in rows],
+        "evidence_dates": sorted({r["date"] for r in host.rows if r["has_answer"]}, key=parse_date),
         "served_has_answer": sum(1 for r in rows if r["has_answer"]),
         "hidden": hidden, "hidden_has_answer": sum(1 for h in hidden if h["has_answer"]),
         "jev_tokens": jev_tokens, "jev_requests": jev_requests, "seconds": time.perf_counter() - t0,
@@ -416,6 +419,20 @@ def main() -> None:
                 continue
             rs_t = by[t]["inv"]
             print(f"  {t:26s} hidden {sum(len(r['hidden']) for r in rs_t):4d}  hidden evidence {sum(r['hidden_has_answer'] for r in rs_t):3d}")
+        # gain slice: knowledge-update questions where the served set held evidence from an earlier
+        # evidence date but none from the latest one (the old value came back, the update did not)
+        for arm in arms:
+            rs = [r for r in by.get("knowledge-update", {}).get(arm, []) if r.get("served_rows") and r.get("evidence_dates")]
+            if not rs:
+                continue
+            old_only = [r for r in rs if any(x["has_answer"] and x["date"] != r["evidence_dates"][-1] for x in r["served_rows"])
+                        and not any(x["has_answer"] and x["date"] == r["evidence_dates"][-1] for x in r["served_rows"])]
+            neither = [r for r in rs if not any(x["has_answer"] for x in r["served_rows"])]
+            both = [r for r in rs if r not in old_only and r not in neither]
+            def acc(xs):
+                return f"{sum(x['correct'] for x in xs)}/{len(xs)}" if xs else "-"
+            print(f"\n{arm}: served old value only {len(old_only)} (correct {acc(old_only)}), "
+                  f"update present {len(both)} (correct {acc(both)}), no evidence served {len(neither)} (correct {acc(neither)})")
         # flips
         if "base" in arms:
             b = {r["question_id"]: r["correct"] for r in by["ALL"]["base"]}

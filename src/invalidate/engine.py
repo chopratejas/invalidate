@@ -211,7 +211,7 @@ class Invalidate:
             model = res.usage.model or model
             for m, votes in zip(batch, res.votes):
                 d = self.policy.dispose(votes)
-                to = self.policy.transition(m.status, d, source=event.source)
+                to = self.policy.transition(m.status, d, source=event.source, still_true=votes.still_true)
                 v = Verdict(
                     event_id=event.id, memory_id=m.id, votes=votes, disposition=d,
                     from_status=m.status, to_status=to, applied=(to != m.status),
@@ -227,7 +227,8 @@ class Invalidate:
             for k, v2 in zip(kill_idx, second):
                 m, v = pairs[k]
                 if not self._agrees(v2, m.status, event.source):
-                    to = self.policy.transition(m.status, Disposition.UNCERTAIN, source=event.source)
+                    to = self.policy.transition(m.status, Disposition.UNCERTAIN, source=event.source,
+                                                still_true=v2.still_true)
                     v = Verdict(event_id=event.id, memory_id=m.id, votes=v2, disposition=Disposition.UNCERTAIN,
                                 from_status=m.status, to_status=to, applied=(to != m.status))
                     pairs[k] = (m, v)
@@ -273,7 +274,7 @@ class Invalidate:
 
     def _agrees(self, votes: Any, status: Status, source: str) -> bool:
         d = self.policy.dispose(votes)
-        return self.policy.transition(status, d, source=source) in _DEAD
+        return self.policy.transition(status, d, source=source, still_true=votes.still_true) in _DEAD
 
     def _successor_for(self, event: Event, superseded: list[Verdict], successor_kind: str | None) -> Memory:
         """Store the event verbatim as the successor of every memory it superseded (once per event)."""
@@ -427,7 +428,7 @@ class Invalidate:
                     votes, d = overrides[e.id], Disposition.UNCERTAIN
                 else:
                     d = self.policy.dispose(votes)
-                to = self.policy.transition(status, d, source=e.source)
+                to = self.policy.transition(status, d, source=e.source, still_true=votes.still_true)
                 out.append(Verdict(event_id=e.id, memory_id=m.id, votes=votes, disposition=d,
                                    from_status=status, to_status=to, applied=(to != status)))
                 status = to

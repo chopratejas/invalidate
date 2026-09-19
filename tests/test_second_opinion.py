@@ -36,7 +36,7 @@ class ContextJudge(FakeJudge):
         return ObserveBatch(votes, JudgeResult(1, "fake"))
 
 
-def test_disagreement_downgrades_kill_to_review():
+def test_disagreement_cancels_the_kill():
     j = ContextJudge().script("owned by Dana", SUPERSEDE)
     mem = Invalidate(":memory:", judge=j)  # second_opinion defaults on
     a = mem.remember("svc-159 is owned by Dana")
@@ -44,13 +44,26 @@ def test_disagreement_downgrades_kill_to_review():
     c = mem.remember("lunch at noon")
     rep = mem.observe("svc-159 is now owned by Jae", source="slack")
     assert mem.get(a.id).status is Status.SUPERSEDED  # both votes agree
-    assert mem.get(b.id).status is Status.NEEDS_REVIEW  # batch said kill, alone said confirm -> review
+    # batch said kill, alone said confirm at 0.95: the clean vote leans true, so the memory stays active and
+    # the disagreement is logged as an uncertain verdict (a clean vote below review_below would queue it).
+    assert mem.get(b.id).status is Status.ACTIVE
     assert mem.get(c.id).status is Status.ACTIVE
     assert sorted(j.solo_calls) == sorted(["svc-159 is owned by Dana", "svc-159 deploys at noon UTC"])
     vb = [v for v in rep.verdicts if v.memory_id == b.id][0]
-    assert vb.disposition is Disposition.UNCERTAIN and vb.votes == CONFIRM  # the deciding vote is recorded
+    assert vb.disposition is Disposition.UNCERTAIN and vb.votes == CONFIRM and not vb.applied  # the deciding vote is recorded
     assert rep.requests == 1 + 2  # one batch + two second opinions
     assert len(mem.history(b.id)) == 1
+
+
+def test_disagreement_with_a_leaning_false_clean_vote_queues_review():
+    from conftest import UNCERTAIN
+
+    j = ContextJudge(alone_votes=UNCERTAIN)  # still_true 0.45
+    mem = Invalidate(":memory:", judge=j)
+    b = mem.remember("svc-159 deploys at noon UTC")
+    mem.remember("lunch at noon")
+    mem.observe("svc-159 is now owned by Jae")
+    assert mem.get(b.id).status is Status.NEEDS_REVIEW
 
 
 def test_second_opinion_off_writes_the_batch_vote():
@@ -71,13 +84,13 @@ def test_no_second_opinion_when_nothing_dies(fake):
     assert rep.requests == 1 and len(fake.observe_calls) == 1
 
 
-def test_unrelated_second_opinion_also_means_review():
-    j = ContextJudge(alone_votes=UNRELATED)
+def test_unrelated_second_opinion_also_cancels_the_kill():
+    j = ContextJudge(alone_votes=UNRELATED)  # still_true 1.0: nothing to review
     mem = Invalidate(":memory:", judge=j)
     b = mem.remember("svc-159 deploys at noon UTC")
     mem.remember("lunch at noon")
     mem.observe("svc-159 is now owned by Jae")
-    assert mem.get(b.id).status is Status.NEEDS_REVIEW
+    assert mem.get(b.id).status is Status.ACTIVE
 
 
 def test_dry_run_still_takes_second_opinion_but_writes_nothing():
@@ -86,7 +99,7 @@ def test_dry_run_still_takes_second_opinion_but_writes_nothing():
     b = mem.remember("svc-159 deploys at noon UTC")
     mem.remember("lunch at noon")
     rep = mem.observe("svc-159 is now owned by Jae", dry_run=True)
-    assert [v.to_status for v in rep.verdicts if v.memory_id == b.id] == [Status.NEEDS_REVIEW]
+    assert [(v.disposition, v.to_status) for v in rep.verdicts if v.memory_id == b.id] == [(Disposition.UNCERTAIN, Status.ACTIVE)]
     assert mem.get(b.id).status is Status.ACTIVE and mem.history(b.id) == []
 
 
@@ -98,14 +111,14 @@ def test_validate_path_takes_second_opinion_per_event():
     mem.observe("svc-159 is now owned by Jae")
     mem.observe("nothing to see here")
     rep = mem.validate()
-    assert mem.get(b.id).status is Status.NEEDS_REVIEW
+    assert mem.get(b.id).status is Status.ACTIVE
     vb = [v for v in rep.verdicts if v.memory_id == b.id]
-    assert vb[0].disposition is Disposition.UNCERTAIN and vb[0].to_status is Status.NEEDS_REVIEW
+    assert vb[0].disposition is Disposition.UNCERTAIN and vb[0].to_status is Status.ACTIVE
     assert j.solo_calls == ["svc-159 deploys at noon UTC", "svc-159 deploys at noon UTC"]  # once per killing event
 
 
 def test_validate_chain_is_recomputed_after_override():
-    """Event 1 kills (overridden to review), event 2 confirms: review resolves back to active."""
+    """Event 1 kills (overridden by a clean confirm), event 2 confirms: active throughout."""
     j = ContextJudge().script("lunch", CONFIRM)
     mem = Invalidate(":memory:", judge=j, lazy=True)
     b = mem.remember("svc-159 deploys at noon UTC")
@@ -114,5 +127,5 @@ def test_validate_chain_is_recomputed_after_override():
     mem.observe("svc-159 still deploys at noon")
     rep = mem.validate()
     vb = [v for v in rep.verdicts if v.memory_id == b.id]
-    assert [v.to_status for v in vb] == [Status.NEEDS_REVIEW, Status.ACTIVE]
+    assert [v.to_status for v in vb] == [Status.ACTIVE, Status.ACTIVE]
     assert mem.get(b.id).status is Status.ACTIVE

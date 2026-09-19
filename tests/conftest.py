@@ -14,7 +14,7 @@ UNRELATED = Votes(bears=0.0, still_true=1.0, replaces=0.0, hypothetical=0.0)
 CONFIRM = Votes(bears=0.95, still_true=0.95, replaces=0.05, hypothetical=0.0)
 CONTRADICT = Votes(bears=0.95, still_true=0.05, replaces=0.1, hypothetical=0.0)
 SUPERSEDE = Votes(bears=0.95, still_true=0.05, replaces=0.9, hypothetical=0.0)
-UNCERTAIN = Votes(bears=0.9, still_true=0.5, replaces=0.5, hypothetical=0.0)
+UNCERTAIN = Votes(bears=0.9, still_true=0.45, replaces=0.5, hypothetical=0.0)  # leans false: queued for review
 HYPOTHETICAL = Votes(bears=0.95, still_true=0.05, replaces=0.9, hypothetical=0.95)
 
 

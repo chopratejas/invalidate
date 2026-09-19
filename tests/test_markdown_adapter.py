@@ -353,7 +353,7 @@ def test_governor_flag_mode_end_to_end(two_files, fake: FakeJudge):
         assert gov.status_of(ids_["Alice owns the billing service"]) is Status.ACTIVE
         ta, tb = read(a), read(b)
         assert "- user prefers Postgres <!-- invalidate: superseded by “we migrated to SQLite last Tuesday” (slack, still true 5%) -->\n" in ta
-        assert "- deploys run at 2pm UTC <!-- invalidate: unclear after “we migrated to SQLite last Tuesday” (slack, still true 50%) -->\n" in ta
+        assert "- deploys run at 2pm UTC <!-- invalidate: unclear after “we migrated to SQLite last Tuesday” (slack, still true 45%) -->\n" in ta
         assert "- prod reads go through the Postgres replica <!-- invalidate: contradicted by" in tb
         assert "- Alice owns the billing service\n" in tb
         assert out.successor_host_id == f"CLAUDE.md#{content_hash('we migrated to SQLite last Tuesday')}"

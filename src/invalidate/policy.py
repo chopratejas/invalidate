@@ -48,6 +48,12 @@ class Policy:
     relevance_min: float = 0.5
     """recall(): minimum relevance probability to return a memory."""
 
+    review_below: float = 0.5
+    """An uncertain verdict moves a memory to needs_review only when still_true is below this. An uncertain
+    vote that leans true is logged and leaves the status alone. On the labelled set every uncertain vote at
+    or above 0.5 was on a fact that was in fact still true; on LongMemEval, sending them to review flooded
+    the queue with true facts (evals/longmemeval/README.md)."""
+
     staged: bool = True
     """Ask the full judgment in two stages: bears + still_true (+ the two event questions) for every memory, then
     replaces + partial only for memories whose still_true is at or below contradict_max - margin, which is the only
@@ -126,12 +132,17 @@ class Policy:
             return Disposition.CONTRADICTED
         return Disposition.UNCERTAIN
 
-    def transition(self, status: Status, d: Disposition, *, source: str | None = None) -> Status:
-        """Next status for a memory given its current status, a disposition, and the event's source."""
+    def transition(
+        self, status: Status, d: Disposition, *, source: str | None = None, still_true: float | None = None,
+    ) -> Status:
+        """Next status for a memory given its current status, a disposition, the event's source, and (optionally)
+        the still_true vote, which decides whether an uncertain verdict is worth a human's time."""
         if source is not None and source in self.review_only_sources and d in (
             Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.PARTIAL,
         ):
             d = Disposition.UNCERTAIN
+        if d is Disposition.UNCERTAIN and still_true is not None and still_true >= self.review_below:
+            return status  # leans true: logged, not queued
         if status is Status.FROZEN:
             return status  # judged for the audit log, never flipped
         if status not in (Status.ACTIVE, Status.NEEDS_REVIEW):

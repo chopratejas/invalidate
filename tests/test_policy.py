@@ -275,3 +275,16 @@ def test_review_only_sources_cannot_invalidate():
         assert p.transition(S.ACTIVE, d, source="slack") is (S.NEEDS_REVIEW if d is D.PARTIAL else S(d.value))
     assert p.transition(S.NEEDS_REVIEW, D.CONFIRMED, source="customer_email") is S.ACTIVE
     assert p.transition(S.ACTIVE, D.UNRELATED, source="customer_email") is S.ACTIVE
+
+
+# ---------------------------------------------------------------- review_below
+def test_uncertain_leaning_true_is_logged_not_queued():
+    from invalidate import Disposition, Policy, Status
+
+    p = Policy()
+    assert p.transition(Status.ACTIVE, Disposition.UNCERTAIN) is Status.NEEDS_REVIEW  # no vote given: queue
+    assert p.transition(Status.ACTIVE, Disposition.UNCERTAIN, still_true=0.62) is Status.ACTIVE
+    assert p.transition(Status.ACTIVE, Disposition.UNCERTAIN, still_true=0.49) is Status.NEEDS_REVIEW
+    assert p.transition(Status.NEEDS_REVIEW, Disposition.UNCERTAIN, still_true=0.62) is Status.NEEDS_REVIEW  # stays
+    p2 = Policy(review_below=0.0)
+    assert p2.transition(Status.ACTIVE, Disposition.UNCERTAIN, still_true=0.1) is Status.ACTIVE
