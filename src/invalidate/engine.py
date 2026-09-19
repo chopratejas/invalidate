@@ -67,7 +67,8 @@ class Invalidate:
     @property
     def judge(self) -> Judge:
         if self._judge is None:
-            self._judge = JevJudge(api_key=self._api_key, model=self._model)
+            self._judge = JevJudge(api_key=self._api_key, model=self._model, staged=self.policy.staged,
+                                   stage_below=self.policy.contradict_max - self.policy.margin)
         return self._judge
 
     def check(self) -> str:

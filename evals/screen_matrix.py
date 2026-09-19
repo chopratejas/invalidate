@@ -74,6 +74,18 @@ def q_pair(j: int, i: int) -> Noul:
     )
 
 
+def q_pair_short(j: int, i: int) -> Noul:
+    """Minimal question: no restatement of the criteria, since Jev already knows what 'about' means."""
+    return Noul(
+        instructions=f"Is `events[{j}].text` about `memories[{i}].fact`?",
+        criteria=NoulCriteria(true="same subject", false="different subject"),
+    )
+
+
+def mem_view_bare(c: dict) -> dict:
+    return {"fact": c["memory"]}
+
+
 def call(client, state, qs):
     """system_one with exponential backoff on 429/529 (the SDK's own retry gives up too early at this rate)."""
     delay = 1.0
@@ -105,10 +117,12 @@ def run(client, form: str, E: int, M: int, workers: int):
 
     def do(job):
         _, ev_idx, mem_idx, qf = job
-        mems = [mem_view(CASES[i]) for i in mem_idx]
-        if form == "pairs":
+        bare = form.endswith("_bare")
+        mems = [(mem_view_bare if bare else mem_view)(CASES[i]) for i in mem_idx]
+        if form.startswith("pairs"):
+            pq = q_pair_short if form.startswith("pairs_short") else q_pair
             state = {"events": [evt_view(CASES[j]) for j in ev_idx], "memories": mems}
-            qs = {f"p_{jj}_{ii}": q_pair(jj, ii) for jj in range(len(ev_idx)) for ii in range(len(mem_idx))}
+            qs = {f"p_{jj}_{ii}": pq(jj, ii) for jj in range(len(ev_idx)) for ii in range(len(mem_idx))}
         else:
             state = {"event": evt_view(CASES[ev_idx[0]]), "memories": mems}
             qs = {f"s_{ii}": qf(ii) for ii in range(len(mem_idx))}
@@ -118,7 +132,7 @@ def run(client, form: str, E: int, M: int, workers: int):
         out = []
         for jj, j in enumerate(ev_idx):
             for ii, i in enumerate(mem_idx):
-                a = resp.answers[f"p_{jj}_{ii}" if form == "pairs" else f"s_{ii}"]
+                a = resp.answers[f"p_{jj}_{ii}" if form.startswith("pairs") else f"s_{ii}"]
                 out.append((j, i, float(a.noul)))
         return out, resp.usage.input_tokens, dt, len(qs)
 
@@ -144,7 +158,7 @@ def report(form, scores, tokens, lat, nq, nreq, E, M):
     off = [(j, i) for j in range(n) for i in range(n) if j != i]
     off_pass = sum(1 for j, i in off if scores[j][i] >= THRESHOLD)
     pairs = n * n
-    print(f"\n== {form}" + (f" (E={E}, M={M})" if form == "pairs" else f" (M={M})"))
+    print(f"\n== {form}" + (f" (E={E}, M={M})" if form.startswith("pairs") else f" (M={M})"))
     print(f"requests {nreq}   questions/request {min(nq)}-{max(nq)}   latency/request p50 {statistics.median(lat):.0f} ms  max {max(lat):.0f} ms")
     print(f"tokens {tokens:,}  = {tokens / pairs:.0f} per pair   cost ${tokens * USD_PER_M / 1e6:.4f} for {pairs:,} pairs   (${tokens * USD_PER_M / 1e6 / pairs:.8f}/pair)")
     print(f"bearing diagonal recall @{THRESHOLD}: {len(bearing) - len(missed)}/{len(bearing)}   missed: {missed}")

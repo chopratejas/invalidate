@@ -48,7 +48,7 @@ def test_observe_maps_votes_in_order_and_copies_hypothetical():
         answers[f"{Q.REPLACES}_{i}"] = 0.3 * (i + 1)
         answers[f"{Q.PARTIAL}_{i}"] = 0.05 * (i + 1)
     client = StubClient(answers)
-    judge = JevJudge(client=client)
+    judge = JevJudge(client=client, staged=False)
     batch = judge.observe(Event(text="evt"), _mems(3))
 
     assert isinstance(batch, ObserveBatch)
@@ -68,7 +68,7 @@ def test_observe_sends_state_and_3n_plus_2_questions_to_client():
     for i in range(2):
         answers.update({f"{Q.BEARS}_{i}": 0.5, f"{Q.STILL_TRUE}_{i}": 0.5, f"{Q.REPLACES}_{i}": 0.5, f"{Q.PARTIAL}_{i}": 0.5})
     client = StubClient(answers)
-    judge = JevJudge(client=client)
+    judge = JevJudge(client=client, staged=False)
     e = Event(text="evt", source="slack")
     ms = _mems(2)
     judge.observe(e, ms)
@@ -110,9 +110,45 @@ def test_observe_empty_memories_short_circuits_without_calling_client():
 
 def test_observe_noul_is_coerced_to_float():
     answers = {Q.HYPOTHETICAL: "0.25", Q.DIRECTIVE: "0.1", f"{Q.BEARS}_0": 1, f"{Q.STILL_TRUE}_0": "0.5", f"{Q.REPLACES}_0": 0, f"{Q.PARTIAL}_0": "0.3"}
-    v = JevJudge(client=StubClient(answers)).observe(Event(text="e"), _mems(1)).votes[0]
+    v = JevJudge(client=StubClient(answers), staged=False).observe(Event(text="e"), _mems(1)).votes[0]
     assert v == Votes(bears=1.0, still_true=0.5, replaces=0.0, hypothetical=0.25, directive=0.1, partial=0.3)
     assert all(isinstance(x, float) for x in (v.bears, v.still_true, v.replaces, v.hypothetical, v.directive))
+
+
+def test_staged_observe_asks_replaces_and_partial_only_for_low_still_true():
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0}
+    still = [0.9, 0.2, 0.35, 0.36]  # 1 and 2 are at or below stage_below=0.35
+    for i, st in enumerate(still):
+        answers.update({f"{Q.BEARS}_{i}": 0.9, f"{Q.STILL_TRUE}_{i}": st, f"{Q.REPLACES}_{i}": 0.7, f"{Q.PARTIAL}_{i}": 0.4})
+    client = StubClient(answers, input_tokens=100)
+    judge = JevJudge(client=client)  # staged by default
+    batch = judge.observe(Event(text="e"), _mems(4))
+    assert len(client.calls) == 2
+    q1, q2 = client.calls[0][1], client.calls[1][1]
+    assert set(q1) == {Q.HYPOTHETICAL, Q.DIRECTIVE} | {f"{Q.BEARS}_{i}" for i in range(4)} | {f"{Q.STILL_TRUE}_{i}" for i in range(4)}
+    assert set(q2) == {f"{Q.REPLACES}_1", f"{Q.PARTIAL}_1", f"{Q.REPLACES}_2", f"{Q.PARTIAL}_2"}
+    assert client.calls[0][0] is client.calls[1][0] or client.calls[0][0] == client.calls[1][0]  # same state
+    assert [v.replaces for v in batch.votes] == [0.0, 0.7, 0.7, 0.0]
+    assert [v.partial for v in batch.votes] == [0.0, 0.4, 0.4, 0.0]
+    assert [v.still_true for v in batch.votes] == still
+    assert batch.usage.input_tokens == 200  # both requests counted
+
+
+def test_staged_observe_skips_stage_two_when_nothing_is_low():
+    answers = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0, f"{Q.BEARS}_0": 0.9, f"{Q.STILL_TRUE}_0": 0.8,
+               f"{Q.REPLACES}_0": 0.7, f"{Q.PARTIAL}_0": 0.4}
+    client = StubClient(answers, input_tokens=100)
+    batch = JevJudge(client=client).observe(Event(text="e"), _mems(1))
+    assert len(client.calls) == 1 and batch.usage.input_tokens == 100
+    assert batch.votes[0].replaces == 0.0 and batch.votes[0].partial == 0.0
+
+
+def test_engine_passes_policy_stage_threshold():
+    from invalidate import Invalidate, Policy
+
+    mem = Invalidate(":memory:", policy=Policy(contradict_max=0.5, margin=0.1), api_key="x")
+    j = mem.judge
+    assert isinstance(j, JevJudge) and j.staged and j.stage_below == pytest.approx(0.4)
 
 
 # --------------------------------------------------------------------------- recall

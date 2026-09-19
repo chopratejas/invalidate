@@ -48,6 +48,12 @@ class Policy:
     relevance_min: float = 0.5
     """recall(): minimum relevance probability to return a memory."""
 
+    staged: bool = True
+    """Ask the full judgment in two stages: bears + still_true (+ the two event questions) for every memory, then
+    replaces + partial only for memories whose still_true is at or below contradict_max - margin, which is the only
+    place the policy reads those two votes. Answers are independent inside a request, so this changes cost, not
+    votes. Skipped votes are recorded as 0."""
+
     second_opinion: bool = True
     """A contradicted/superseded verdict is re-judged with the memory alone in the state before it is written.
     If the clean-context vote disagrees, the memory goes to needs_review instead of dying. Batches of
@@ -87,15 +93,15 @@ class Policy:
     # --- pair screening (many events x many memories in one request) ------------
     pair_events: int = 10
     """Events per pair-screen request. Used by validate() and observe_many(). evals/screen_matrix.py:
-    10 x 25 keeps 134/136 labelled bearing pairs at pair_min 0.2 (136/136 at 0.15) at 70 tokens per pair;
+    10 x 25 keeps 134/136 labelled bearing pairs at pair_min 0.15 for 52 tokens per pair;
     5 x 100 drops to 129/136, so keep the memory side small and the event side wide."""
 
     pair_memories: int = 25
     """Memories per pair-screen request."""
 
-    pair_min: float = 0.2
+    pair_min: float = 0.15
     """Pair-screen threshold. Lower than screen_min because the pair question is stricter (fewer
-    unrelated pairs pass) and the full judgment runs after it anyway."""
+    unrelated pairs pass) and the full judgment runs after it anyway. Measured: 134/136 bearing pairs kept."""
 
     lazy: bool = False
     """When True, observe() only appends the event to the log and judges nothing; memories are judged

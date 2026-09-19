@@ -59,7 +59,11 @@ class JevJudge:
         timeout: float = 30.0,
         client: Any | None = None,
         max_retries: int = 6,
+        staged: bool = True,
+        stage_below: float = 0.35,
     ) -> None:
+        """`staged`: two-stage full judgment (see Policy.staged). `stage_below` is the still_true level at or below
+        which replaces/partial are asked; the engine passes `contradict_max - margin` (0.35 with default policy)."""
         if client is None:
             from typesafe_sdk import TypeSafeClient
 
@@ -77,6 +81,8 @@ class JevJudge:
         self.client = client
         self.model = model
         self.max_retries = max_retries
+        self.staged = staged
+        self.stage_below = stage_below
 
     def _call(self, state: Any, questions: Any) -> Any:
         """system_one with exponential backoff on 429/529. At scale the token-per-second limit is hit
@@ -97,22 +103,39 @@ class JevJudge:
     def observe(self, event: Event, memories: list[Memory]) -> ObserveBatch:
         if not memories:
             return ObserveBatch([], JudgeResult(0, None))
-        resp = self._call(Q.observe_state(event, memories), Q.observe_questions(len(memories)))
-        a = resp.answers
+        state = Q.observe_state(event, memories)
+        n = len(memories)
+        if not self.staged:
+            resp = self._call(state, Q.observe_questions(n))
+            return ObserveBatch(self._votes(resp.answers, n, set(range(n))), _usage(resp))
+        # Stage 1: everything except replaces/partial. Stage 2: those two, only where still_true is low enough
+        # for the policy to read them. Same votes as one request (answers are independent), fewer tokens.
+        r1 = self._call(state, Q.observe_questions_stage1(n))
+        a = dict(r1.answers)
+        tokens = _usage(r1).input_tokens
+        model = getattr(r1, "model", None)
+        low = [i for i in range(n) if _p(a[f"{Q.STILL_TRUE}_{i}"]) <= self.stage_below]
+        if low:
+            r2 = self._call(state, Q.observe_questions_stage2(low))
+            a.update(r2.answers)
+            tokens += _usage(r2).input_tokens
+        return ObserveBatch(self._votes(a, n, set(low)), JudgeResult(tokens, model))
+
+    @staticmethod
+    def _votes(a: Any, n: int, with_stage2: set[int]) -> list[Votes]:
         hyp = _p(a[Q.HYPOTHETICAL])
         directive = _p(a[Q.DIRECTIVE])
-        votes = [
+        return [
             Votes(
                 bears=_p(a[f"{Q.BEARS}_{i}"]),
                 still_true=_p(a[f"{Q.STILL_TRUE}_{i}"]),
-                replaces=_p(a[f"{Q.REPLACES}_{i}"]),
+                replaces=_p(a[f"{Q.REPLACES}_{i}"]) if i in with_stage2 else 0.0,
                 hypothetical=hyp,
                 directive=directive,
-                partial=_p(a[f"{Q.PARTIAL}_{i}"]),
+                partial=_p(a[f"{Q.PARTIAL}_{i}"]) if i in with_stage2 else 0.0,
             )
-            for i in range(len(memories))
+            for i in range(n)
         ]
-        return ObserveBatch(votes, _usage(resp))
 
     def screen(self, event: Event, memories: list[Memory]) -> RecallBatch:
         """Cheap bears-only pass over a big batch. Returns one probability per memory."""

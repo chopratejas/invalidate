@@ -216,6 +216,19 @@ def observe_questions(n: int) -> dict[str, Noul]:
     return qs
 
 
+def observe_questions_stage1(n: int) -> dict[str, Noul]:
+    """Event-level questions + bears_i + still_true_i. Enough to confirm or clear most memories."""
+    qs = observe_questions(n)
+    return {k: v for k, v in qs.items() if not (k.startswith(REPLACES) or k.startswith(PARTIAL))}
+
+
+def observe_questions_stage2(indices: list[int]) -> dict[str, Noul]:
+    """replaces_i + partial_i for the memories whose still_true fell low enough that the policy will look at them."""
+    qs = observe_questions(max(indices) + 1 if indices else 0)
+    keep = {f"{REPLACES}_{i}" for i in indices} | {f"{PARTIAL}_{i}" for i in indices}
+    return {k: v for k, v in qs.items() if k in keep}
+
+
 def screen_questions(n: int) -> dict[str, Noul]:
     """One short bears-only Noul per memory, for cheap screening of large pools."""
     return {
@@ -236,15 +249,13 @@ def pair_state(events: list[Event], memories: list[Memory]) -> dict[str, Any]:
 
 
 def pair_question(j: int, i: int) -> Noul:
-    """The pair screen. Short on purpose: it is repeated once per (event, memory) pair and the question text is
-    what the pair costs (about 60 tokens). evals/screen_matrix.py measured 10 events x 25 memories per request
-    at 134/136 labelled bearing pairs kept (threshold 0.2), 70 tokens per pair, 263 ms per request."""
+    """The pair screen. Minimal on purpose: it is repeated once per (event, memory) pair and the question text is
+    what the pair costs. evals/screen_matrix.py over the full 157x157 matrix, 10 events x 25 memories per request:
+    this form keeps 134/136 labelled bearing pairs at threshold 0.15 for 52 tokens per pair (the earlier wording
+    with restated criteria: 134/136 at 0.2 for 70). Dropping `kind`/`source` from the state hurt recall."""
     return Noul(
-        instructions=f"Is `events[{j}].text` about the same subject as `memories[{i}].fact`?",
-        criteria=NoulCriteria(
-            true="Same thing, entity, setting, or preference, whether or not they agree",
-            false="A different subject",
-        ),
+        instructions=f"Is `events[{j}].text` about `memories[{i}].fact`?",
+        criteria=NoulCriteria(true="same subject", false="different subject"),
     )
 
 
