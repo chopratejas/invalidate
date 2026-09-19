@@ -49,6 +49,8 @@ grep '^TYPESAFE_API_KEY=' ../.env | cut -d= -f2- | tr -d '\n' | vercel env add T
 
 ## 3. Deploy
 
+Production is live at https://invalidate-playground.vercel.app. Both Preview and Production have the key set.
+
 ```bash
 cd deploy
 vercel link --yes --project invalidate-playground   # first time only
