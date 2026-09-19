@@ -499,7 +499,7 @@ class TestGovernedSearch:
 
         assert [m.id for m in asyncio.run(go()).memories] == [live]
 
-    def test_review_is_hidden_by_default(self, fake):
+    def test_review_is_served_by_default_and_can_be_hidden(self, fake):
         c = FakeMemoryAPIClient()
         mid = c.seed("user prefers postgres")
         fake.script("postgres", UNCERTAIN)
@@ -507,7 +507,8 @@ class TestGovernedSearch:
         gov.sync()
         gov.observe("postgres might be going away", source="slack")
         assert gov.status_of(mid) is Status.NEEDS_REVIEW
-        assert governed_search(c, gov, "postgres").memories == []
+        assert [m.id for m in governed_search(c, gov, "postgres").memories] == [mid]
+        assert governed_search(c, gov, "postgres", include_review=False).memories == []
         assert c.rows[mid].topics == [f"{MARKER_PREFIX}needs_review"] + [t for t in c.rows[mid].topics if ":" in t[len(MARKER_PREFIX):]]
         gov.keep(mid)
         assert [m.id for m in governed_search(c, gov, "postgres").memories] == [mid]

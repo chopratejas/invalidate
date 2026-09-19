@@ -473,16 +473,29 @@ def test_status_of_dead_ids_review(gov, fake):
     assert gov.status_of("c") is Status.NEEDS_REVIEW
 
 
-def test_filter_hides_dead_and_reviewed_by_default(gov, fake):
+def test_filter_hides_dead_and_serves_reviewed_by_default(gov, fake):
     fake.script("memory:a", SUPERSEDE).script("memory:c", UNCERTAIN)
     gov.sync()
     gov.observe("everything changed", source="slack")
     results = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "unknown"}]
-    # A fact flagged for a human must not reach the model until the human decides.
+    # An uncertain vote is not a known-false fact: reviewed memories are served (and queued for a human).
     kept = gov.filter(results, id_of=lambda r: r["id"])
-    assert [r["id"] for r in kept] == ["b", "unknown"]
-    kept = gov.filter(results, id_of=lambda r: r["id"], include_review=True)
     assert [r["id"] for r in kept] == ["b", "c", "unknown"]
+    kept = gov.filter(results, id_of=lambda r: r["id"], include_review=False)
+    assert [r["id"] for r in kept] == ["b", "unknown"]
+
+
+def test_annotate_labels_dead_results_with_the_retiring_event(gov, fake):
+    fake.script("memory:a", SUPERSEDE).script("memory:b", CONTRADICT).script("memory:c", UNCERTAIN)
+    gov.sync()
+    gov.observe("everything changed", source="slack")
+    results = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "unknown"}]
+    out = gov.annotate(results, id_of=lambda r: r["id"])
+    assert [r["id"] for r, _ in out] == ["a", "b", "c", "unknown"]
+    notes = {r["id"]: n for r, n in out}
+    assert notes["a"] == "OUTDATED, replaced as of slack: everything changed"
+    assert notes["b"] == "OUTDATED, no longer true as of slack: everything changed"
+    assert notes["c"] is None and notes["unknown"] is None
 
 
 def test_filter_coerces_ids_to_str(gov, fake):

@@ -274,7 +274,7 @@ def _default_id(row: Any) -> Any:
 
 
 def governed_rows(rows: Iterable[Any], gov: Governor, *, id_of: Callable[[Any], Any] | None = None,
-                  include_review: bool = False) -> list[Any]:
+                  include_review: bool = True) -> list[Any]:
     """Drop rows the ledger knows are dead (or under review) from a result set you fetched yourself.
 
     `id_of` extracts the host id; the default takes column 0 of a tuple, `row["id"]` of a dict, or

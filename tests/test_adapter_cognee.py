@@ -524,15 +524,15 @@ class TestGovernedSearch:
         res = governed_search(cog, gov, "Alice", query_type=FakeSearchType.SUMMARIES)
         assert len(res[0]["search_result"]) == 2  # no document id on summaries: nothing to filter on
 
-    def test_review_hidden_by_default_and_explicit_scope_respected(self, cog, fake):
+    def test_review_served_by_default_and_explicit_scope_respected(self, cog, fake):
         r = cog.seed("Alice prefers Postgres")
         other = cog.dataset("other")
         fake.script("Postgres", UNCERTAIN)
         gov = _gov(_adapter(cog), fake, mode="ledger")
         gov.sync()
         gov.observe("Alice might switch databases", source="slack")
-        assert governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS)[0]["search_result"] == []
-        hits = governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS, include_review=True)
+        assert governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS, include_review=False)[0]["search_result"] == []
+        hits = governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS)
         assert [p["document_id"] for p in hits[0]["search_result"]] == [str(r.id)]
         res = governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS, dataset_ids=[other.id])
         assert cog.calls[-1][1]["dataset_ids"] == [other.id] and res[0]["search_result"] == []

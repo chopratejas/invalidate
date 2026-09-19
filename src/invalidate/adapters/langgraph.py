@@ -40,7 +40,7 @@ def live_filter(prefix: str = "invalidate_") -> dict[str, Any]:
     return {f"{prefix}live": {"$ne": False}}
 
 
-def filter_items(items: Iterable[Any], gov: Governor, *, include_review: bool = False) -> list[Any]:
+def filter_items(items: Iterable[Any], gov: Governor, *, include_review: bool = True) -> list[Any]:
     """Drop search results (Item/SearchItem, or anything with `.key`) whose memory is dead in the ledger."""
     adapter = gov.adapter
     key_of = getattr(adapter, "host_id_of", None) or (lambda it: it.key)

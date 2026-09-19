@@ -126,7 +126,8 @@ class TestFlag:
         gov.observe("maybe postgres is gone", source="slack")
         assert "user prefers postgres" in block.facts and adapter.hidden == {}
         assert adapter.receipts[PG]["invalidate_status"] == "needs_review"
-        assert governed_facts(block, gov) == ["user lives in berlin", "deploys run at 2pm UTC"]
+        assert governed_facts(block, gov, include_review=False) == ["user lives in berlin", "deploys run at 2pm UTC"]
+        assert "user prefers postgres" in governed_facts(block, gov)  # served by default: uncertain is not false
 
     def test_flag_unknown_id_raises_and_is_reported_not_raised_by_the_governor(self, fake):
         adapter = FactBlockAdapter(_block())

@@ -236,11 +236,38 @@ SYSTEM = (
 
 def fmt_memories(rows: list[dict]) -> str:
     rows = sorted(rows, key=lambda r: parse_date(r["date"]))
-    return "\n\n".join(f"[{r['date']}] user said: {r['text']}" for r in rows)
+    out = []
+    for r in rows:
+        line = f"[{r['date']}] user said: {r['text']}"
+        if r.get("note"):
+            line += f"\n    -> {r['note']}"
+        out.append(line)
+    return "\n\n".join(out)
+
+
+def annotate(gov: Governor, rows: list[dict]) -> list[dict]:
+    """Serving mode 'annotate': keep every candidate, but label the ones the ledger has retired with what
+    retired them. The model sees the change chain explicitly instead of inferring it from dates."""
+    out = []
+    for r in rows:
+        m = gov.mem.store.get_memory(gov.our_id(r["id"]))
+        r = dict(r)
+        if m is not None and m.status.value in ("superseded", "contradicted"):
+            last = [v for v in gov.mem.history(m.id) if v.applied and v.to_status is m.status]
+            if last:
+                e = gov.mem.store.get_event(last[-1].event_id)
+                ev = re.sub(r"^\[[^\]]*\]\s*", "", e.text) if e else ""
+                when = re.match(r"^\[([^\]]*)\]", e.text).group(1) if e and e.text.startswith("[") else ""
+                word = "replaced" if m.status.value == "superseded" else "no longer true"
+                r["note"] = f"OUTDATED, {word} as of {when}: {ev}" if ev else "OUTDATED"
+            else:
+                r["note"] = "OUTDATED"
+        out.append(r)
+    return out
 
 
 def run_question(q: dict, arm: str, k: int, models: Models, policy_kw: dict, host_kind: str = "facts",
-                 extract_model: str = "claude-haiku-4-5-20251001") -> dict:
+                 extract_model: str = "claude-haiku-4-5-20251001", serve_review: object = False) -> dict:
     t0 = time.perf_counter()
     order = sorted(range(len(q["haystack_sessions"])), key=lambda i: parse_date(q["haystack_dates"][i]))
     host = FactsHost(models, extract_model, HERE / "results" / "extract_cache") if host_kind == "facts" else TurnsHost(models)
@@ -275,12 +302,17 @@ def run_question(q: dict, arm: str, k: int, models: Models, policy_kw: dict, hos
         cands = host.search(q["question"], 2 * k)
         rep = gov.validate([r["id"] for r in cands])
         jev_tokens, jev_requests = rep.input_tokens, rep.requests
-        live = gov.filter(cands, id_of=lambda r: r["id"], validate=False)
+        if serve_review == "annotate":
+            live = annotate(gov, cands)
+        else:
+            live = gov.filter(cands, id_of=lambda r: r["id"], validate=False, include_review=bool(serve_review))
         live_ids = {r["id"] for r in live}
         hidden = [{"id": r["id"], "text": r["text"][:160], "date": r["date"], "has_answer": r["has_answer"],
                    "status": (gov.status_of(r["id"]) or "?").value if gov.status_of(r["id"]) else "?"}
-                  for r in cands if r["id"] not in live_ids]
+                  for r in cands if r["id"] not in live_ids or r.get("note")]
         rows = live[:k]
+        if serve_review == "annotate":
+            rows = live[:k]  # same k as the baseline; annotations add text, not memories
     user = f"Memories:\n\n{fmt_memories(rows)}\n\nQuestion date: {q['question_date']}\nQuestion: {q['question']}"
     response = models.answer(SYSTEM, user)
     abst = q["question_id"].endswith("_abs")
@@ -309,6 +341,9 @@ def main() -> None:
     ap.add_argument("--tag", default="")
     ap.add_argument("--host", default="facts", choices=["facts", "turns"])
     ap.add_argument("--extract-model", default="claude-haiku-4-5-20251001")
+    ap.add_argument("--serve", default="hide", choices=["hide", "review", "annotate"],
+                    help="inv arm: hide = drop dead and reviewed; review = drop dead only; "
+                         "annotate = keep everything, label dead facts with what replaced them (default hide)")
     a = ap.parse_args()
 
     data = json.load(open(HERE / "data" / f"longmemeval_{a.split}"))
@@ -332,7 +367,8 @@ def main() -> None:
 
     def work(q, arm):
         try:
-            r = run_question(q, arm, a.k, models, policy_kw, host_kind=a.host, extract_model=a.extract_model)
+            r = run_question(q, arm, a.k, models, policy_kw, host_kind=a.host, extract_model=a.extract_model,
+                             serve_review={"hide": False, "review": True, "annotate": "annotate"}[a.serve])
         except Exception as e:  # noqa: BLE001
             r = {"question_id": q["question_id"], "type": q["question_type"], "arm": arm, "error": repr(e)}
         (out_dir / f"{arm}_{q['question_id']}.json").write_text(json.dumps(r, indent=1))

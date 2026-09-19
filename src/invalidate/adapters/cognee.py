@@ -429,7 +429,7 @@ def _filter_payloads(res: Any, hide: set[str]) -> Any:
     return res
 
 
-def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = False, **kw: Any) -> Any:
+def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
     """`cognee.search(query, **kw)` with results of dead (and, by default, under-review) rows removed.
 
     Works on payload-shaped results: `SearchType.CHUNKS` / `CHUNKS_LEXICAL` (filtered by `document_id`)
@@ -447,7 +447,7 @@ def governed_search(client: Any, gov: Governor, query: str, *, include_review: b
     return filter_results(res, gov, include_review=include_review)
 
 
-def filter_results(res: Any, gov: Governor, *, include_review: bool = False) -> Any:
+def filter_results(res: Any, gov: Governor, *, include_review: bool = True) -> Any:
     """The filtering half of `governed_search`, for results you already have (e.g. awaited yourself)."""
     hide = set(gov.dead_ids())
     if not include_review:

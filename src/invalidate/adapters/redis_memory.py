@@ -267,16 +267,17 @@ def _scope_given(kw: dict[str, Any]) -> bool:
     return any(k in kw for k in _SCOPE_KEYS)
 
 
-def governed_search(client: Any, gov: Governor, query: str, **kw: Any) -> Any:
-    """`client.search_long_term_memory(query, **kw)` run synchronously, with dead (and under-review) memories
-    removed. Returns the `MemoryRecordResults` the client returned with `memories` filtered and the other fields
+def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
+    """`client.search_long_term_memory(query, **kw)` run synchronously, with dead memories removed (and
+    under-review ones too when include_review=False). Returns the `MemoryRecordResults` the client returned with `memories` filtered and the other fields
     (`total`, `next_offset`) untouched. When `kw` names no scope filter and the governor's adapter is a
     RedisMemoryAdapter, its scope filters are applied."""
     adapter = gov.adapter
     if not _scope_given(kw) and isinstance(adapter, RedisMemoryAdapter):
         kw = {**adapter.filters(), **kw}
     res = _run(client.search_long_term_memory(query, **kw))
-    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "")
+    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "",
+                      include_review=include_review)
     copy = getattr(res, "model_copy", None)
     if callable(copy):
         return copy(update={"memories": keep})
@@ -284,13 +285,14 @@ def governed_search(client: Any, gov: Governor, query: str, **kw: Any) -> Any:
     return res
 
 
-async def agoverned_search(client: Any, gov: Governor, query: str, **kw: Any) -> Any:
+async def agoverned_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
     """Async twin of `governed_search` for code already inside an event loop."""
     adapter = gov.adapter
     if not _scope_given(kw) and isinstance(adapter, RedisMemoryAdapter):
         kw = {**adapter.filters(), **kw}
     res = await client.search_long_term_memory(query, **kw)
-    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "")
+    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "",
+                      include_review=include_review)
     copy = getattr(res, "model_copy", None)
     if callable(copy):
         return copy(update={"memories": keep})

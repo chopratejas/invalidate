@@ -193,7 +193,7 @@ def fact_blocks(memory: Any) -> list[Any]:
     return [b for b in getattr(memory, "memory_blocks", []) or [] if isinstance(getattr(b, "facts", None), list)]
 
 
-def governed_facts(block: Any, gov: Governor, *, include_review: bool = False) -> list[str]:
+def governed_facts(block: Any, gov: Governor, *, include_review: bool = True) -> list[str]:
     """`block.facts` with facts that are dead (or under review) in the ledger dropped. Read-only: use this
     when you render facts yourself or want to double-check what the adapter left in the block."""
     return gov.filter(_facts_of(block), id_of=fact_id, include_review=include_review)

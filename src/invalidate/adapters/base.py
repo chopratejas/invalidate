@@ -332,12 +332,13 @@ class Governor:
         return self.mem.list(statuses=[Status.NEEDS_REVIEW])
 
     def filter(
-        self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = False,
+        self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = True,
         validate: bool | None = None,
     ) -> list[Any]:
-        """Drop host results whose memory is dead or under review. Unknown ids pass through.
-        Reviewed memories are hidden by default: a fact flagged for a human should not reach the model
-        until the human decides (`keep()` or `forget()`). Pass include_review=True to serve them anyway.
+        """Drop host results whose memory is dead (contradicted or superseded). Unknown ids pass through.
+        Memories under review are served by default: an uncertain vote is not a known-false fact, and on
+        LongMemEval hiding them cost more correct answers than it saved (evals/longmemeval/README.md).
+        They still sit in the review queue for a human. Pass include_review=False to hide them too.
         `validate=True` (default in lazy mode) first judges these results against the events they have not
         seen yet, so a stale memory is caught on the way to the prompt even if observe() never judged it."""
         results = list(results)
@@ -349,6 +350,34 @@ class Governor:
         if not include_review:
             hide |= {self.host_id(m) for m in self.review()}
         return [r for r in results if str(id_of(r)) not in hide]
+
+    def annotate(
+        self, results: Iterable[Any], *, id_of: Callable[[Any], str], validate: bool | None = None,
+    ) -> list[tuple[Any, str | None]]:
+        """Serving mode for prompts: keep every result and attach a note to the retired ones saying what
+        retired them ("OUTDATED, replaced as of <event source>: <event text>"). The model sees the change
+        chain explicitly instead of inferring it from dates, and questions about the previous value
+        ("where did I keep them before?") stay answerable. On LongMemEval knowledge-update questions this
+        beat hiding (evals/longmemeval/README.md). Returns [(result, note_or_None), ...]."""
+        results = list(results)
+        if validate is None:
+            validate = self.lazy
+        if validate and results:
+            self.validate([str(id_of(r)) for r in results])
+        out: list[tuple[Any, str | None]] = []
+        for r in results:
+            m = self.mem.store.get_memory(self.our_id(str(id_of(r))))
+            note = None
+            if m is not None and m.status in DEAD:
+                last = [v for v in self.mem.history(m.id) if v.applied and v.to_status is m.status]
+                word = "replaced" if m.status is Status.SUPERSEDED else "no longer true"
+                if last:
+                    e = self.mem.store.get_event(last[-1].event_id)
+                    note = f"OUTDATED, {word} as of {e.source}: {e.text}" if e else f"OUTDATED, {word}"
+                else:
+                    note = f"OUTDATED, {word}"
+            out.append((r, note))
+        return out
 
     def guard(self, add: Callable[..., Any], *, text_of: Callable[..., Iterable[str]] | None = None, source: str = "user") -> Callable[..., Any]:
         """Wrap a host `add(...)`: judge the incoming text against every memory first, then call through.
