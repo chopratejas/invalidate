@@ -10,3 +10,7 @@ build/
 *.egg-info/
 .pytest_cache/
 evals/results/
+deploy/.vercel/
+deploy/.env.local
+deploy/invalidate/
+deploy/public/

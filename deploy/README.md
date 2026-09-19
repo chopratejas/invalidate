@@ -1,21 +1,25 @@
 # invalidate playground on Vercel
 
-A stateless copy of the `invalidate ui` playground, packaged as two Python Vercel Functions
-(Fluid Compute, Python runtime) plus a static page. Nothing is persisted; every request builds a
+A stateless copy of the `invalidate ui` demo (conversation landing page at `/`, two-box paste
+playground at `/paste`), packaged as four Python Vercel Functions (Fluid Compute, Python runtime)
+plus two static pages. Nothing is persisted; every request builds a
 throwaway in-memory `Invalidate`, judged by Jev via the TypeSafe SDK.
 
 ```
 deploy/
+  api/chat.py         POST /api/chat     -> {"ok": true, "reply": "...", "facts": [...], "changes": [...], ...}
+  api/story.py        GET  /api/story    -> {"ok": true, "story": [...]}
   api/presets.py      GET  /api/presets  -> {"ok": true, "presets": {...}}
   api/check.py        POST /api/check    -> {"ok": true, "facts": [...], "steps": [...], "summary": {...}}
-  public/index.html   the playground (GENERATED: copy of src/invalidate/ui/static/playground.html)
+  public/index.html   landing page / chat demo (GENERATED: copy of src/invalidate/ui/static/chat.html)
+  public/paste.html   paste playground at /paste (GENERATED: copy of src/invalidate/ui/static/playground.html)
   invalidate/         GENERATED: copy of src/invalidate (minus ui/static and __pycache__)
   requirements.txt    typesafe-sdk
-  vercel.json         rewrite / -> /index.html; includeFiles for the package
+  vercel.json         framework null; rewrites / -> /index.html, /paste -> /paste.html; includeFiles
   sync.sh             regenerates the two GENERATED entries
 ```
 
-`invalidate/` and `public/` are copies, not symlinks (Vercel uploads do not follow symlinks
+`invalidate/` and `public/*.html` are copies, not symlinks (Vercel uploads do not follow symlinks
 reliably). Edit the originals under `src/invalidate`, then re-sync.
 
 ## 1. Sync the package
@@ -65,8 +69,10 @@ vercel curl /api/check -X POST -H 'content-type: application/json' \
 ## Limits baked into the functions
 
 - `invalidate.ui.check`: at most 60 facts, 25 events, 600 chars per line.
-- `api/check.py`: 64 KB request body cap; 20 checks per 10 minutes per IP (in-memory, per function
-  instance, so it is a soft limit; use the Vercel Firewall for a hard one). Responses carry
-  `Cache-Control: no-store`.
+- `invalidate.ui.chat`: at most 80 facts carried per turn, 1200 chars of text.
+- `api/check.py`: 64 KB request body cap; 20 checks per 10 minutes per IP.
+- `api/chat.py`: 64 KB request body cap; 40 turns per 10 minutes per IP.
+  Rate limits are in-memory per function instance (a soft limit; use the Vercel Firewall for a
+  hard one). All responses carry `Cache-Control: no-store`.
 - Errors: `400` bad input (`{"ok": false, "error": "..."}`), `413` body too large, `429` rate limited,
   `500` missing `TYPESAFE_API_KEY` or unexpected failure, `502` TypeSafe upstream error.
