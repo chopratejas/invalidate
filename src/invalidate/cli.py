@@ -20,6 +20,7 @@ from typing import Any, Callable
 from typesafe_sdk import TypeSafeError
 
 from . import __version__
+from .adapters.base import Governor
 from .engine import Invalidate
 from .judge import MissingAPIKey
 from .types import Memory, ObserveReport, Status, now
@@ -326,6 +327,40 @@ def cmd_ui(db: str, a: argparse.Namespace) -> None:
     serve(db, host=a.host, port=a.port, namespace=a.namespace, open_browser=not a.no_open)
 
 
+def cmd_govern(db: str, a: argparse.Namespace) -> None:
+    """`invalidate govern md <paths...> --sync | --observe TEXT`: Governor + MarkdownAdapter, thin."""
+    from .adapters.markdown import MarkdownAdapter
+
+    if a.host != "md":
+        raise ValueError(f"unknown host {a.host!r}")
+    if not a.sync and a.observe is None:
+        raise ValueError("govern md: pass --sync or --observe TEXT")
+    adapter = MarkdownAdapter(a.paths, glob=a.glob, annotate=not a.no_annotate)
+    with Governor(adapter, db, mode=a.mode, successors=a.successors) as gov:
+        srep = gov.sync()
+        if a.observe is None:
+            if a.json:
+                emit(srep)
+            else:
+                print(srep)
+            return
+        before = {m.id: m for m in gov.mem.list()}
+        t0 = time.perf_counter()
+        rep = gov.observe(a.observe, source=a.source, dry_run=a.dry_run)
+        if a.json:
+            emit({"sync": srep, "report": rep.report, "pushes": rep.pushes, "successor_host_id": rep.successor_host_id})
+            return
+        print(paint(str(srep), "dim"))
+        print_flips(rep.report, before, (time.perf_counter() - t0) * 1000, dry_run=a.dry_run)
+        for p in rep.pushes:
+            where = p.host_id or "-"
+            if p.error:
+                print(f"  {paint('push failed', 'red')}  {p.action:6s} {where}  {p.error}")
+            else:
+                print(f"  {paint(p.action, 'bold'):6s} {where}  {status_word(p.status)}")
+        print(paint(rep.summary(), "dim"))
+
+
 COMMANDS: dict[str, Callable[[Invalidate, argparse.Namespace], None]] = {
     "remember": cmd_remember, "observe": cmd_observe, "recall": cmd_recall, "ls": cmd_ls, "show": cmd_show,
     "freeze": _status_cmd("freeze"), "unfreeze": _status_cmd("unfreeze"), "restore": _status_cmd("restore"),
@@ -391,6 +426,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--no-open", action="store_true", help="do not open a browser tab")
     s.add_argument("--seed", action="store_true", help="remember the 6 demo facts if the database is empty")
+    s = add("govern", "put invalidate in front of a host memory: `govern md <paths...> --observe TEXT | --sync`")
+    s.add_argument("host", choices=["md"], help="host kind: md = Markdown/text files (CLAUDE.md, AGENTS.md, notes)")
+    s.add_argument("paths", nargs="+", help="files, directories or globs")
+    s.add_argument("--sync", action="store_true", help="pull the files into the ledger and report; no model call")
+    s.add_argument("--observe", metavar="TEXT", help="judge TEXT against every claim and push the outcome into the files")
+    s.add_argument("--source", default="cli")
+    s.add_argument("--mode", choices=list(Governor.MODES), default="flag",
+                   help="flag: annotate lines; delete: remove dead lines; ledger: touch nothing (default flag)")
+    s.add_argument("--successors", action="store_true",
+                   help="append the event verbatim under '## invalidate: newer facts' when it supersedes a claim")
+    s.add_argument("--dry-run", action="store_true", help="judge and report, write nothing")
+    s.add_argument("--glob", metavar="PATTERN", help="pattern for directory paths (default *.md)")
+    s.add_argument("--no-annotate", action="store_true", help="never write receipts into the files (ledger still updates)")
     return p
 
 
@@ -412,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
             cmd_demo(a)
         elif a.cmd == "ui":
             cmd_ui(db, a)
+        elif a.cmd == "govern":
+            cmd_govern(db, a)
         else:
             with Invalidate(db, namespace=a.namespace) as mem:
                 COMMANDS[a.cmd](mem, a)

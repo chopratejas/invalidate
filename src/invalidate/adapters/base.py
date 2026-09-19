@@ -211,11 +211,14 @@ class Governor:
                 except Exception as e:  # noqa: BLE001 - host errors must not lose the ledger
                     self._pushes.append(Push("", "insert", Status.ACTIVE, error=repr(e)))
                 if successor_host_id:
-                    succ = self.mem.remember(
-                        report.event.text, source=report.event.source, id=self.our_id(successor_host_id),
-                        metadata={"host": self.adapter.name, "host_id": successor_host_id,
-                                  "host_hash": _h(report.event.text), "event_id": report.event.id},
-                    )
+                    # Content-addressed hosts (markdown) hand back the same id for the same text: reuse the row.
+                    succ = self.mem.store.get_memory(self.our_id(successor_host_id))
+                    if succ is None:
+                        succ = self.mem.remember(
+                            report.event.text, source=report.event.source, id=self.our_id(successor_host_id),
+                            metadata={"host": self.adapter.name, "host_id": successor_host_id,
+                                      "host_hash": _h(report.event.text), "event_id": report.event.id},
+                        )
                     for v in superseded:
                         self.mem.supersede(v.memory_id, by=succ.id)
         return GovernorReport(report=report, pushes=list(self._pushes), successor_host_id=successor_host_id)
