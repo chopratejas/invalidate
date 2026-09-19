@@ -25,6 +25,11 @@ dependencies = [
 dev = ["pytest>=8", "pytest-cov"]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.40"]
+chroma = ["chromadb>=0.5"]
+langgraph = ["langgraph>=0.2"]
+mem0 = ["mem0ai>=0.1"]
+letta = ["letta-client>=0.1"]
+graphiti = ["graphiti-core>=0.3"]
 
 [project.scripts]
 invalidate = "invalidate.cli:main"
