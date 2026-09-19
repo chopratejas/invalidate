@@ -44,6 +44,7 @@ class Disposition(str, enum.Enum):
     CONTRADICTED = "contradicted"
     SUPERSEDED = "superseded"
     UNCERTAIN = "uncertain"
+    HYPOTHETICAL = "hypothetical"  # event bears on the memory but is a question/plan/proposal: logged, never written
 
 
 @dataclass
@@ -123,6 +124,7 @@ class ObserveReport:
     input_tokens: int
     latency_ms: float
     model: str | None = None
+    successor: Memory | None = None  # set when remember_successor=True stored the event as a new memory
 
     @property
     def changed(self) -> list[Verdict]:
@@ -138,7 +140,7 @@ class ObserveReport:
 
     def summary(self) -> str:
         parts = [f"{self.judged} judged"]
-        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.CONFIRMED):
+        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.HYPOTHETICAL, Disposition.CONFIRMED):
             n = self.count(d)
             if n:
                 parts.append(f"{n} {d.value}")

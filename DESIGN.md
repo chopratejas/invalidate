@@ -54,7 +54,7 @@ Rejected alternatives:
 ```
 bears < 0.5                              → unrelated   (no write, last_checked only)
 still_true >= 0.7                        → confirmed   (needs_review → active)
-still_true <= 0.3 and hypothetical >= 0.7 → uncertain  (a plan/question cannot flip a fact)
+hypothetical >= 0.7                      → hypothetical (logged, never written: a question or plan cannot move a fact)
 still_true <= 0.3 and replaces >= 0.6    → superseded
 still_true <= 0.3                        → contradicted
 otherwise                                → uncertain   (→ needs_review)
@@ -75,12 +75,15 @@ separately.
    │                                                                    │
    ├──contradicted───────────────────────────────────────────────────────┘
    ├──superseded─────────────────────────────────────────────────────────┘
-   ├──freeze()──▶ frozen  (judged, logged, never flipped; unfreeze() → active)
+   ├──freeze()──▶ frozen  (judged, p_true logged, status pinned even past TTL; unfreeze() → active)
    ├──ttl elapsed / sweep()──▶ expired
    └──forget()──▶ deleted
 
  restore(id) is the human override back to active from any of the dead states.
 ```
+
+`observe()` writes the event and every verdict before it mutates any memory or
+fires `on_transition`, so a crash mid-apply leaves a complete audit trail.
 
 Contradicted and superseded memories are not re-judged by default
 (`Policy.judge_statuses`). A reversal ("we moved back to Postgres") is a new
@@ -101,7 +104,8 @@ A lease has three parts:
 
 - `Invalidate(db, judge=, policy=, namespace=, on_transition=)`
 - `remember(fact, source, kind, ttl, metadata) -> Memory`
-- `observe(text, source, candidates=, dry_run=) -> ObserveReport`
+- `observe(text, source, candidates=, dry_run=, remember_successor=) -> ObserveReport`
+  (`remember_successor=True` stores the event verbatim as the successor of anything it superseded)
 - `recall(query, limit, include_review) -> RecallReport`
 - `freeze / unfreeze / restore / forget / supersede / sweep / history / events`
 - `Store` protocol (SQLite shipped) and `Judge` protocol (Jev shipped, fakes in tests)

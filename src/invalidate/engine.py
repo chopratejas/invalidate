@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .judge import Judge, JevJudge, run_batches
+from .judge import Judge, JevJudge, JudgeMisaligned, run_batches
 from .policy import Policy
 from .store import SQLiteStore, Store
 from .types import (
@@ -99,12 +99,17 @@ class Invalidate:
         metadata: dict[str, Any] | None = None,
         candidates: Iterable[Memory] | None = None,
         dry_run: bool = False,
+        remember_successor: bool = False,
+        successor_kind: str | None = None,
     ) -> ObserveReport:
         """Judge new evidence against every judgeable memory and apply the policy.
 
         `candidates` lets you pre-filter (tags, namespace, your own index). Default: every memory
         in the namespace whose status is in `policy.judge_statuses` and which has not expired.
         `dry_run=True` judges and returns verdicts but writes nothing.
+        `remember_successor=True` stores the event text verbatim as a new memory when it supersedes
+        at least one existing memory, and links each superseded row to it (`superseded_by`).
+        The successor takes the kind of the first superseded memory unless `successor_kind` is given.
         """
         text = text.strip()
         if not text:
@@ -113,12 +118,20 @@ class Invalidate:
         event = Event(text=text, source=source, namespace=ns, metadata=metadata or {})
         t0 = time.perf_counter()
 
-        pool = list(candidates) if candidates is not None else self.store.list_memories(ns)
+        if candidates is None:
+            pool = self.store.list_memories(ns)
+        else:
+            # Reload by id so stale objects cannot clobber concurrent freeze()/forget(), and stay in-namespace.
+            pool = []
+            for c in candidates:
+                fresh = self.store.get_memory(c.id)
+                if fresh is not None and fresh.namespace == ns:
+                    pool.append(fresh)
         judgeable: list[Memory] = []
         skipped = 0
         t_now = now()
         for m in pool:
-            if m.status in self.policy.judge_statuses and not m.is_expired(t_now):
+            if m.status in self.policy.judge_statuses and (m.status is Status.FROZEN or not m.is_expired(t_now)):
                 judgeable.append(m)
             else:
                 skipped += 1
@@ -127,9 +140,12 @@ class Invalidate:
         results = run_batches(lambda b: self.judge.observe(event, b), batches, self.policy.max_workers)
 
         verdicts: list[Verdict] = []
+        pairs: list[tuple[Memory, Verdict]] = []
         tokens = 0
         model = None
         for batch, res in zip(batches, results):
+            if len(res.votes) != len(batch):
+                raise JudgeMisaligned(f"judge returned {len(res.votes)} votes for {len(batch)} memories")
             tokens += res.usage.input_tokens
             model = res.usage.model or model
             for m, votes in zip(batch, res.votes):
@@ -140,14 +156,29 @@ class Invalidate:
                     from_status=m.status, to_status=to, applied=(to != m.status),
                 )
                 verdicts.append(v)
-                if not dry_run:
-                    self._apply(m, v)
+                pairs.append((m, v))
 
+        successor: Memory | None = None
         if not dry_run:
+            # Audit trail first: if a callback or the process dies mid-apply, the event and votes survive.
             self.store.add_event(event)
             self.store.add_verdicts(verdicts)
+            for m, v in pairs:
+                self._apply(m, v)
+            superseded = [v for v in verdicts if v.applied and v.to_status is Status.SUPERSEDED]
+            if remember_successor and superseded:
+                first = self.get(superseded[0].memory_id)
+                successor = self.remember(
+                    event.text, source=event.source, kind=successor_kind or first.kind, namespace=ns,
+                    metadata={"supersedes": [v.memory_id for v in superseded], "event_id": event.id},
+                )
+                for v in superseded:
+                    m = self.get(v.memory_id)
+                    m.superseded_by = successor.id
+                    self.store.update_memory(m)
 
         return ObserveReport(
+            successor=successor,
             event=event, verdicts=verdicts, judged=len(judgeable), skipped=skipped, requests=len(batches),
             input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000, model=model,
         )
@@ -185,6 +216,8 @@ class Invalidate:
         scored: list[Recalled] = []
         tokens = 0
         for batch, res in zip(batches, results):
+            if len(res.relevance) != len(batch):
+                raise JudgeMisaligned(f"judge returned {len(res.relevance)} relevances for {len(batch)} memories")
             tokens += res.usage.input_tokens
             for m, r in zip(batch, res.relevance):
                 if r >= threshold:
@@ -212,7 +245,8 @@ class Invalidate:
 
     # -- human controls -----------------------------------------------------------
     def freeze(self, memory_id: str) -> Memory:
-        """Pin a memory. It is still judged on observe() for the audit log, but never auto-flipped."""
+        """Pin a memory. It is still judged on observe() (votes and p_true are recorded for the audit log),
+        but its status is never changed by observe() or sweep(). Only unfreeze()/forget() move it."""
         return self._set_status(memory_id, Status.FROZEN)
 
     def unfreeze(self, memory_id: str) -> Memory:
@@ -238,10 +272,10 @@ class Invalidate:
         return m
 
     def sweep(self, *, namespace: str | None = None) -> list[Memory]:
-        """Mark hard-TTL-expired memories as expired. Pure code; no model call."""
+        """Mark hard-TTL-expired memories as expired. Pure code; no model call. Frozen memories are left alone."""
         t_now = now()
         expired = []
-        for m in self.store.list_memories(namespace or self.namespace, {Status.ACTIVE, Status.NEEDS_REVIEW, Status.FROZEN}):
+        for m in self.store.list_memories(namespace or self.namespace, {Status.ACTIVE, Status.NEEDS_REVIEW}):
             if m.is_expired(t_now):
                 m.status = Status.EXPIRED
                 m.updated_at = t_now

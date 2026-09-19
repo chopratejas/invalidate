@@ -89,6 +89,10 @@ class MissingAPIKey(RuntimeError):
     pass
 
 
+class JudgeMisaligned(RuntimeError):
+    """The judge returned a different number of answers than memories sent."""
+
+
 def _p(answer: Any) -> float:
     return float(answer.noul)
 

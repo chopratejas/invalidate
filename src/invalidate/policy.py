@@ -26,8 +26,8 @@ class Policy:
     """If contradicted and replaces >= this, the memory is superseded, not just contradicted."""
 
     hypothetical_max: float = 0.7
-    """If the event is judged hypothetical/question/plan above this, a contradiction
-    is downgraded to uncertain instead of flipping the memory."""
+    """If the event is judged a question/proposal/plan at or above this, any non-confirming
+    vote becomes HYPOTHETICAL: logged for the audit trail, never written to status."""
 
     relevance_min: float = 0.5
     """recall(): minimum relevance probability to return a memory."""
@@ -53,9 +53,9 @@ class Policy:
             return Disposition.UNRELATED
         if v.still_true >= self.confirm_min:
             return Disposition.CONFIRMED
+        if v.hypothetical >= self.hypothetical_max:
+            return Disposition.HYPOTHETICAL
         if v.still_true <= self.contradict_max:
-            if v.hypothetical >= self.hypothetical_max:
-                return Disposition.UNCERTAIN
             if v.replaces >= self.replace_min:
                 return Disposition.SUPERSEDED
             return Disposition.CONTRADICTED
@@ -67,7 +67,7 @@ class Policy:
             return status  # judged for the audit log, never flipped
         if status not in (Status.ACTIVE, Status.NEEDS_REVIEW):
             return status
-        if d is Disposition.UNRELATED:
+        if d in (Disposition.UNRELATED, Disposition.HYPOTHETICAL):
             return status
         if d is Disposition.CONFIRMED:
             return Status.ACTIVE if (status is Status.ACTIVE or self.review_resolves) else status
