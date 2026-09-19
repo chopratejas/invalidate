@@ -9,8 +9,9 @@ D = Disposition
 S = Status
 
 
-def v(bears=0.9, still_true=0.9, replaces=0.0, hypothetical=0.0, directive=0.0) -> Votes:
-    return Votes(bears=bears, still_true=still_true, replaces=replaces, hypothetical=hypothetical, directive=directive)
+def v(bears=0.9, still_true=0.9, replaces=0.0, hypothetical=0.0, directive=0.0, partial=0.0) -> Votes:
+    return Votes(bears=bears, still_true=still_true, replaces=replaces, hypothetical=hypothetical,
+                 directive=directive, partial=partial)
 
 
 # --------------------------------------------------------------------------- defaults
@@ -113,14 +114,18 @@ def test_boundary_bears_min_is_inclusive():
 
 def test_boundary_confirm_min_is_inclusive():
     p = Policy()
-    assert p.dispose(v(still_true=0.6)) is D.CONFIRMED
-    assert p.dispose(v(still_true=0.5999)) is D.UNCERTAIN
+    # the 0.05 margin shifts the effective line to 0.65
+    assert p.dispose(v(still_true=0.65)) is D.CONFIRMED
+    assert p.dispose(v(still_true=0.6499)) is D.UNCERTAIN
+    assert Policy(margin=0.0).dispose(v(still_true=0.6)) is D.CONFIRMED
 
 
 def test_boundary_contradict_max_is_inclusive():
     p = Policy()
-    assert p.dispose(v(still_true=0.4, replaces=0.0)) is D.CONTRADICTED
-    assert p.dispose(v(still_true=0.4001, replaces=0.0)) is D.UNCERTAIN
+    # the 0.05 margin shifts the effective line to 0.35
+    assert p.dispose(v(still_true=0.35, replaces=0.0)) is D.CONTRADICTED
+    assert p.dispose(v(still_true=0.3501, replaces=0.0)) is D.UNCERTAIN
+    assert Policy(margin=0.0).dispose(v(still_true=0.4, replaces=0.0)) is D.CONTRADICTED
 
 
 def test_boundary_replace_min_is_inclusive():
@@ -148,7 +153,7 @@ def test_boundary_extreme_probabilities():
 
 
 def test_custom_thresholds_are_honoured():
-    p = Policy(bears_min=0.2, confirm_min=0.9, contradict_max=0.5, replace_min=0.95, hypothetical_max=0.5)
+    p = Policy(bears_min=0.2, confirm_min=0.9, contradict_max=0.5, replace_min=0.95, hypothetical_max=0.5, margin=0.0)
     # bears 0.3 is now enough to bear
     assert p.dispose(v(bears=0.3, still_true=0.95)) is D.CONFIRMED
     # 0.85 is no longer confirmed under confirm_min=0.9
@@ -248,3 +253,25 @@ def test_status_and_disposition_values_are_stable_strings():
     assert S.NEEDS_REVIEW.value == "needs_review"
     assert S("superseded") is S.SUPERSEDED
     assert D("unrelated") is D.UNRELATED
+
+
+
+def test_dispose_partial_routes_compound_change_to_review():
+    p = Policy()
+    assert p.dispose(v(still_true=0.05, replaces=0.95, partial=0.9)) is D.PARTIAL
+    assert p.dispose(v(still_true=0.05, replaces=0.05, partial=0.9)) is D.PARTIAL
+    assert p.dispose(v(still_true=0.05, replaces=0.95, partial=0.8499)) is D.SUPERSEDED
+    assert p.dispose(v(still_true=0.05, replaces=0.95, partial=0.85)) is D.PARTIAL
+    assert p.dispose(v(still_true=0.95, partial=0.9)) is D.CONFIRMED  # nothing changed, partial is moot
+    assert p.transition(S.ACTIVE, D.PARTIAL) is S.NEEDS_REVIEW
+    assert p.transition(S.NEEDS_REVIEW, D.PARTIAL) is S.NEEDS_REVIEW
+    assert p.transition(S.FROZEN, D.PARTIAL) is S.FROZEN
+
+
+def test_review_only_sources_cannot_invalidate():
+    p = Policy(review_only_sources=frozenset({"customer_email"}))
+    for d in (D.CONTRADICTED, D.SUPERSEDED, D.PARTIAL):
+        assert p.transition(S.ACTIVE, d, source="customer_email") is S.NEEDS_REVIEW
+        assert p.transition(S.ACTIVE, d, source="slack") is (S.NEEDS_REVIEW if d is D.PARTIAL else S(d.value))
+    assert p.transition(S.NEEDS_REVIEW, D.CONFIRMED, source="customer_email") is S.ACTIVE
+    assert p.transition(S.ACTIVE, D.UNRELATED, source="customer_email") is S.ACTIVE

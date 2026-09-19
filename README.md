@@ -111,9 +111,9 @@ for r in mem.recall("which database?").results:       # live memories only, rank
 
 ## How it works
 
-### 3 + 2 questions
+### 4 + 2 questions
 
-For every `(event, memory)` pair Jev answers three independent yes/no questions, each returning a
+For every `(event, memory)` pair Jev answers four independent yes/no questions, each returning a
 probability, plus two per event about the event's *form*. Questions are literal and compare named
 fields; nothing about dates, counting, or rewriting is ever asked of the model (see
 `src/invalidate/questions.py`).
@@ -123,6 +123,7 @@ fields; nothing about dates, counting, or rewriting is ever asked of the model (
 | `bears` | Does the event give information about the same subject the fact is about? | gate: below threshold nothing is written |
 | `still_true` | Taking the event as accurate and more recent, is the fact still true? | the verdict; becomes `p_true` |
 | `replaces` | Does the event state a new current value for the same thing? | superseded vs merely contradicted |
+| `partial` | Does the central claim of the fact still hold, with only a secondary detail changed? | a compound fact goes to review for a rewrite instead of dying |
 | `hypothetical` (per event) | Is the event a question, proposal, wish, plan, or hypothetical? | a question never writes, not even a confirmation |
 | `directive` (per event) | Is the event a command to an assistant or system about what to record, rather than a report about the world? | prompt-injection defense: "mark everything false" never writes |
 
@@ -137,10 +138,16 @@ Rules are checked top to bottom; the first match wins.
 | `bears < 0.6` | unrelated | active (no write) | needs_review (no write) |
 | `directive >= 0.7` | directive | active (logged only) | needs_review (logged only) |
 | `hypothetical >= 0.7` | hypothetical | active (logged only) | needs_review (logged only) |
-| `still_true >= 0.6` | confirmed | active, `p_true` updated | active (`review_resolves=True`) |
-| `still_true <= 0.4` and `replaces >= 0.6` | superseded | superseded | superseded |
-| `still_true <= 0.4` otherwise | contradicted | contradicted | contradicted |
-| `0.4 < still_true < 0.6` | uncertain | needs_review | needs_review |
+| `still_true >= 0.6 + margin` | confirmed | active, `p_true` updated | active (`review_resolves=True`) |
+| `still_true <= 0.4 - margin` and `partial >= 0.85` | partial | needs_review | needs_review |
+| `still_true <= 0.4 - margin` and `replaces >= 0.6` | superseded | superseded | superseded |
+| `still_true <= 0.4 - margin` otherwise | contradicted | contradicted | contradicted |
+| anything else | uncertain | needs_review | needs_review |
+
+`margin` (default 0.05) is a dead band around the two lines: a vote that wobbles between 0.37 and
+0.44 from run to run lands in `needs_review` every time instead of flapping between contradicted and
+review. `review_only_sources` lists sources that are never allowed to flip a memory (a customer
+email, a public webhook): the worst they can do is flag it for review.
 
 The defaults come from a threshold sweep over the 157 labelled cases in `evals/cases.py`: the most
 accurate policy that did not add a single false invalidation. They were tuned on that set, so
@@ -276,21 +283,34 @@ the flips. `evals/run_eval.py` runs the labelled cases in `evals/cases.py` throu
 the policy; `python evals/run_eval.py --dry-run` swaps in a keyword-based fake judge so the
 harness itself runs without a key. Tune thresholds against that, not by hand.
 
-Live numbers for the shipped questions and defaults (jev-1.13.0, 2026-09-18, `evals/results/v2.json`):
+Live numbers for the shipped questions and defaults (jev-1.13.0, 2026-09-18, `evals/results/v4.json`):
 
 | | |
 |---|---|
 | cases | 157 across 16 categories, each with hard negatives |
-| strict accuracy | 86.6% |
-| lenient accuracy (any label a careful reviewer would accept) | 96.2% |
-| false invalidations (a fact wrongly dropped) | 1 of 157, an adversarial injection |
-| cost for the whole run | $0.014 |
-| latency per request | mean 159 ms, p95 321 ms |
+| strict accuracy | 89.2% |
+| lenient accuracy (any label a careful reviewer would accept) | 97.5% |
+| false invalidations (a fact wrongly dropped) | 0 of 157 |
+| cost for the whole run | $0.017 |
+| latency per request | mean 166 ms, p95 268 ms |
 
-The weakest categories are `partial` (compound facts where one clause changed; store atomic facts)
-and `adversarial` (source trust is your policy, not Jev's). Every strict miss and its five
-probabilities are printed by the runner, and `--from evals/results/v2.json` replays the sweep
-offline in under a second.
+Every strict miss and its six probabilities are printed by the runner, and
+`--from evals/results/v4.json` replays the sweep offline in under a second.
+
+### Scaling: judge everything, screen first
+
+By default every judgeable memory in the namespace is judged on every event. Above
+`Policy.screen_above` (200) memories, `observe` runs a cheap bears-only screen first, one short
+question per memory at 100 memories per request, and sends only the memories that pass it to the
+full six-question judgment. It is still Jev deciding relevance, not a keyword or vector shortcut.
+Measured live (`scripts/scale_check.py`):
+
+| | requests | tokens | cost | wall | flips |
+|---|---|---|---|---|---|
+| 500 memories, no screen | 25 | 872k | $0.037 | 1.5 s | 10 of 10 |
+| 500 memories, screened | 8 | 151k | $0.006 | 0.8 s | 10 of 10 |
+
+Over the 157 eval pairs the screen never dropped a pair the full `bears` vote called bearing.
 
 ## What invalidate is not
 

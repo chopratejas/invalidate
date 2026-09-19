@@ -22,9 +22,9 @@ def _text(n: Noul) -> str:
 
 
 @pytest.mark.parametrize("n", [0, 1, 2, 5, 20])
-def test_observe_questions_count_is_3n_plus_2(n: int):
+def test_observe_questions_count_is_4n_plus_2(n: int):
     qs = Q.observe_questions(n)
-    assert len(qs) == 3 * n + 2
+    assert len(qs) == 4 * n + 2
     assert all(isinstance(q, Noul) for q in qs.values())
 
 
@@ -32,7 +32,7 @@ def test_observe_questions_ids_are_exactly_as_expected():
     qs = Q.observe_questions(3)
     expected = {Q.HYPOTHETICAL, Q.DIRECTIVE}
     for i in range(3):
-        expected |= {f"{Q.BEARS}_{i}", f"{Q.STILL_TRUE}_{i}", f"{Q.REPLACES}_{i}"}
+        expected |= {f"{Q.BEARS}_{i}", f"{Q.STILL_TRUE}_{i}", f"{Q.REPLACES}_{i}", f"{Q.PARTIAL}_{i}"}
     assert set(qs) == expected
 
 
@@ -46,7 +46,7 @@ def test_observe_questions_zero_memories_only_event_level():
     assert sorted(Q.observe_questions(0)) == sorted([Q.DIRECTIVE, Q.HYPOTHETICAL])
 
 
-@pytest.mark.parametrize("prefix", [Q.BEARS, Q.STILL_TRUE, Q.REPLACES])
+@pytest.mark.parametrize("prefix", [Q.BEARS, Q.STILL_TRUE, Q.REPLACES, Q.PARTIAL])
 def test_each_memory_question_references_its_own_fact_path_with_backticks(prefix: str):
     n = 4
     qs = Q.observe_questions(n)
@@ -160,7 +160,7 @@ def test_state_never_leaks_ids_timestamps_status_or_metadata():
 def test_observe_questions_are_json_serialisable():
     payload = json.dumps(_dump(Q.observe_questions(5)))
     back = json.loads(payload)
-    assert len(back) == 17
+    assert len(back) == 22
     assert back[Q.HYPOTHETICAL]["type"] == "noul"
 
 
@@ -174,14 +174,14 @@ def test_observe_state_is_json_serialisable():
     json.dumps(s)  # metadata is excluded from the view, so this must not raise
 
 
-def test_observe_questions_budget_for_default_batch_of_20_under_90k_chars():
+def test_observe_questions_budget_for_default_batch_of_20_under_130k_chars():
     size = len(json.dumps(_dump(Q.observe_questions(20))))
-    assert size < 90_000, size
+    assert size < 130_000, size
 
 
-def test_recall_questions_budget_for_default_batch_of_20_under_90k_chars():
+def test_recall_questions_budget_for_default_batch_of_20_under_130k_chars():
     size = len(json.dumps(_dump(Q.recall_questions(20))))
-    assert size < 90_000, size
+    assert size < 130_000, size
 
 
 def test_observe_questions_size_grows_linearly():

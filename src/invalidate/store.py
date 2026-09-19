@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
   replaces REAL NOT NULL,
   hypothetical REAL NOT NULL,
   directive REAL NOT NULL DEFAULT 0,
+  partial REAL NOT NULL DEFAULT 0,
   disposition TEXT NOT NULL,
   from_status TEXT NOT NULL,
   to_status TEXT NOT NULL,
@@ -88,8 +89,9 @@ class SQLiteStore:
 
     def _migrate(self) -> None:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(verdicts)")}
-        if "directive" not in cols:
-            self._conn.execute("ALTER TABLE verdicts ADD COLUMN directive REAL NOT NULL DEFAULT 0")
+        for col in ("directive", "partial"):
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} REAL NOT NULL DEFAULT 0")
 
     # -- memories -----------------------------------------------------------
     def add_memory(self, m: Memory) -> None:
@@ -176,7 +178,7 @@ class SQLiteStore:
         rows = [
             (
                 v.event_id, v.memory_id, v.votes.bears, v.votes.still_true, v.votes.replaces, v.votes.hypothetical,
-                v.votes.directive, v.disposition.value, v.from_status.value, v.to_status.value, int(v.applied), v.created_at,
+                v.votes.directive, v.votes.partial, v.disposition.value, v.from_status.value, v.to_status.value, int(v.applied), v.created_at,
             )
             for v in verdicts
         ]
@@ -185,7 +187,8 @@ class SQLiteStore:
         with self._lock:
             self._conn.executemany(
                 "INSERT INTO verdicts (event_id, memory_id, bears, still_true, replaces, hypothetical, directive,"
-                " disposition, from_status, to_status, applied, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " partial, disposition, from_status, to_status, applied, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
 
@@ -231,7 +234,7 @@ def _row_to_verdict(r: sqlite3.Row) -> Verdict:
     return Verdict(
         id=r["id"], event_id=r["event_id"], memory_id=r["memory_id"],
         votes=Votes(bears=r["bears"], still_true=r["still_true"], replaces=r["replaces"], hypothetical=r["hypothetical"],
-                    directive=r["directive"]),
+                    directive=r["directive"], partial=r["partial"]),
         disposition=Disposition(r["disposition"]), from_status=Status(r["from_status"]), to_status=Status(r["to_status"]),
         applied=bool(r["applied"]), created_at=r["created_at"],
     )

@@ -46,6 +46,7 @@ class Disposition(str, enum.Enum):
     UNCERTAIN = "uncertain"
     HYPOTHETICAL = "hypothetical"  # event bears on the memory but is a question/plan/proposal: logged, never written
     DIRECTIVE = "directive"        # event is an instruction to the system about what to record: logged, never written
+    PARTIAL = "partial"            # event changes only part of a compound fact: needs a rewrite, goes to review
 
 
 @dataclass
@@ -95,6 +96,7 @@ class Votes:
     replaces: float
     hypothetical: float  # event-level; repeated on every pair for auditability
     directive: float = 0.0  # event-level: the event commands a system/assistant about what to store or believe
+    partial: float = 0.0  # the event changes only part of what the fact asserts
 
 
 @dataclass
@@ -126,6 +128,7 @@ class ObserveReport:
     input_tokens: int
     latency_ms: float
     model: str | None = None
+    screened_out: int = 0  # memories dropped by the cheap bears-only screen (large pools only)
     successor: Memory | None = None  # set when remember_successor=True stored the event as a new memory
 
     @property
@@ -142,11 +145,13 @@ class ObserveReport:
 
     def summary(self) -> str:
         parts = [f"{self.judged} judged"]
-        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.HYPOTHETICAL,
-                  Disposition.DIRECTIVE, Disposition.CONFIRMED):
+        for d in (Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.PARTIAL, Disposition.UNCERTAIN,
+                  Disposition.HYPOTHETICAL, Disposition.DIRECTIVE, Disposition.CONFIRMED):
             n = self.count(d)
             if n:
                 parts.append(f"{n} {d.value}")
+        if self.screened_out:
+            parts.append(f"{self.screened_out} screened out")
         parts.append(f"{self.requests} req")
         parts.append(f"{self.latency_ms:.0f} ms")
         parts.append(f"${self.cost_usd:.5f}")

@@ -26,7 +26,7 @@ from .types import (
 Transition = Callable[[Memory, Verdict], None]
 
 _CONTENT_VERDICTS = frozenset(
-    {Disposition.CONFIRMED, Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN}
+    {Disposition.CONFIRMED, Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.PARTIAL}
 )
 
 
@@ -151,13 +151,33 @@ class Invalidate:
             else:
                 skipped += 1
 
+        tokens = 0
+        model = None
+        screened_out = 0
+        n_screen_requests = 0
+        screen = getattr(self.judge, "screen", None)
+        if screen is not None and len(judgeable) > self.policy.screen_above:
+            # Stage 1: one short bears-only question per memory, big batches. Drops only clear non-matches.
+            sbatches = _chunk(judgeable, self.policy.screen_batch_size)
+            sresults = run_batches(lambda b: screen(event, b), sbatches, self.policy.max_workers)
+            kept: list[Memory] = []
+            for sb, sr in zip(sbatches, sresults):
+                if len(sr.relevance) != len(sb):
+                    raise JudgeMisaligned(f"screen returned {len(sr.relevance)} scores for {len(sb)} memories")
+                tokens += sr.usage.input_tokens
+                model = sr.usage.model or model
+                for m, b in zip(sb, sr.relevance):
+                    if b >= self.policy.screen_min:
+                        kept.append(m)
+            n_screen_requests = len(sbatches)
+            screened_out = len(judgeable) - len(kept)
+            judgeable = kept
+
         batches = _chunk(judgeable, self.policy.batch_size)
         results = run_batches(lambda b: self.judge.observe(event, b), batches, self.policy.max_workers)
 
         verdicts: list[Verdict] = []
         pairs: list[tuple[Memory, Verdict]] = []
-        tokens = 0
-        model = None
         for batch, res in zip(batches, results):
             if len(res.votes) != len(batch):
                 raise JudgeMisaligned(f"judge returned {len(res.votes)} votes for {len(batch)} memories")
@@ -165,7 +185,7 @@ class Invalidate:
             model = res.usage.model or model
             for m, votes in zip(batch, res.votes):
                 d = self.policy.dispose(votes)
-                to = self.policy.transition(m.status, d)
+                to = self.policy.transition(m.status, d, source=event.source)
                 v = Verdict(
                     event_id=event.id, memory_id=m.id, votes=votes, disposition=d,
                     from_status=m.status, to_status=to, applied=(to != m.status),
@@ -194,8 +214,9 @@ class Invalidate:
 
         return ObserveReport(
             successor=successor,
-            event=event, verdicts=verdicts, judged=len(judgeable), skipped=skipped, requests=len(batches),
-            input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000, model=model,
+            event=event, verdicts=verdicts, judged=len(judgeable), skipped=skipped, screened_out=screened_out,
+            requests=len(batches) + n_screen_requests, input_tokens=tokens,
+            latency_ms=(time.perf_counter() - t0) * 1000, model=model,
         )
 
     def _apply(self, m: Memory, v: Verdict) -> None:

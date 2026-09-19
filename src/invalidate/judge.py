@@ -35,6 +35,7 @@ class RecallBatch:
 class Judge(Protocol):
     def observe(self, event: Event, memories: list[Memory]) -> ObserveBatch: ...
     def recall(self, query: str, memories: list[Memory]) -> RecallBatch: ...
+    # Optional: `screen(event, memories) -> RecallBatch` (bears-only probabilities) enables two-stage observe.
 
 
 class JevJudge:
@@ -78,10 +79,19 @@ class JevJudge:
                 replaces=_p(a[f"{Q.REPLACES}_{i}"]),
                 hypothetical=hyp,
                 directive=directive,
+                partial=_p(a[f"{Q.PARTIAL}_{i}"]),
             )
             for i in range(len(memories))
         ]
         return ObserveBatch(votes, _usage(resp))
+
+    def screen(self, event: Event, memories: list[Memory]) -> RecallBatch:
+        """Cheap bears-only pass over a big batch. Returns one probability per memory."""
+        if not memories:
+            return RecallBatch([], JudgeResult(0, None))
+        resp = self.client.system_one(Q.observe_state(event, memories), Q.screen_questions(len(memories)))
+        rel = [_p(resp.answers[f"{Q.SCREEN}_{i}"]) for i in range(len(memories))]
+        return RecallBatch(rel, _usage(resp))
 
     def recall(self, query: str, memories: list[Memory]) -> RecallBatch:
         if not memories:

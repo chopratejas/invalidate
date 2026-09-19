@@ -137,3 +137,5 @@ flip" label). The sweep does not vary `directive_max`; it is a safety knob, not 
 | `results/baseline.json` | 75.2% | 93.0% | 3 | original 3+1 questions, thresholds 0.5/0.7/0.3 |
 | `results/v2.json` | 82.8% | 94.9% | 1 | + `directive` vote, form checks before confirm, better criteria examples |
 | `results/v2.json` with shipped defaults | 86.6% | 96.2% | 1 | thresholds 0.6/0.6/0.4 chosen by the sweep (tuned on this set) |
+| `results/v3.json` | 77.1% | 85.4% | 0 | + `partial` vote (first phrasing) and `margin`: partial fired on plain supersedes |
+| `results/v4.json` (shipped) | 89.2% | 97.5% | 0 | `partial` reframed around the central claim, `partial_min` 0.85, `margin` 0.05 |

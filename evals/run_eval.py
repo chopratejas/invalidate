@@ -224,9 +224,9 @@ def judge_all(judge, requests: list[list[dict]], workers: int) -> tuple[list[dic
 
 # ----------------------------------------------------------------------------- scoring
 # The label vocabulary is unrelated/confirmed/contradicted/superseded/uncertain. The policy's
-# HYPOTHETICAL disposition (a question/plan: logged, never written) is scored as "uncertain",
-# the closest "do not flip" label.
-_LABEL = {"hypothetical": "uncertain"}
+# form dispositions are mapped to the closest label with the same write behaviour:
+# HYPOTHETICAL (no write) -> uncertain, DIRECTIVE (no write) -> unrelated, PARTIAL (review) -> uncertain.
+_LABEL = {"hypothetical": "uncertain", "directive": "unrelated", "partial": "uncertain"}
 
 
 def _label(d) -> str:
@@ -321,7 +321,8 @@ def print_report(policy: Policy, records: list[dict], requests: list[dict], meta
         print(f"- {f['id']:6s} {f['category']:26s} expected={f['expected']:12s} predicted={f['predicted']:12s}{flag}")
         if v:
             print(f"    bears={v['bears']:.2f} still_true={v['still_true']:.2f} replaces={v['replaces']:.2f} "
-                  f"hypothetical={v['hypothetical']:.2f}  acceptable={acc}")
+                  f"hypothetical={v['hypothetical']:.2f} directive={v.get('directive', 0.0):.2f} "
+                  f"partial={v.get('partial', 0.0):.2f}  acceptable={acc}")
         else:
             print(f"    error: {f.get('error')}")
         print(f"    memory: {f['memory'][:90]}")
