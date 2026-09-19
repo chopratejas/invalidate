@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>invalidate · store</title>
+<style>
+/* ---------- tokens ---------- */
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --panel-2: #f1f1ee; --line: #e3e3df; --line-2: #d2d2cc;
+  --fg: #16161a; --fg-2: #5c5c66; --fg-3: #8c8c96; --accent: #16161a; --accent-fg: #ffffff;
+  --active: #1f9d55; --review: #c98a10; --contradicted: #d6423a; --superseded: #7c4dcc; --frozen: #2f6fdd; --grey: #8c8c96;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  --r: 12px; --shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f11; --panel: #17171a; --panel-2: #1e1e22; --line: #26262b; --line-2: #34343a;
+    --fg: #ececee; --fg-2: #a0a0a8; --fg-3: #6c6c74; --accent: #ececee; --accent-fg: #0f0f11;
+    --active: #3ccf7a; --review: #e6a626; --contradicted: #f0605a; --superseded: #a07ff0; --frozen: #5b93f5; --grey: #6c6c74;
+    --shadow: none;
+  }
+}
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: inherit; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--fg-2); }
+.faint { color: var(--fg-3); }
+.hidden { display: none !important; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px 64px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); color: var(--fg); white-space: nowrap; }
+.btn:hover { background: var(--panel-2); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.primary:hover { opacity: .9; }
+.btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--fg-2); }
+.btn.ghost:hover { background: var(--panel-2); color: var(--fg); }
+.btn.link { border: 0; background: none; padding: 0; height: auto; color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; }
+.input, select.input, textarea.input { height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); outline: none; width: 100%; }
+.input:focus { border-color: var(--fg-3); }
+textarea.input { height: auto; min-height: 72px; padding: 8px 10px; resize: vertical; font-family: var(--mono); }
+select.input { appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, var(--fg-3) 50%), linear-gradient(135deg, var(--fg-3) 50%, transparent 50%); background-position: calc(100% - 14px) 14px, calc(100% - 10px) 14px; background-size: 4px 4px; background-repeat: no-repeat; }
+.spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* ---------- pills + bars (the only places status colour is used) ---------- */
+.pill { --c: var(--grey); display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 500; letter-spacing: .01em; color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); white-space: nowrap; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.pillwrap { position: relative; display: inline-grid; }
+.pillwrap > .pill { grid-area: 1 / 1; transition: opacity .4s ease; }
+.pillwrap > .pill.next { opacity: 0; }
+.pillwrap.swap > .pill.prev { opacity: 0; }
+.pillwrap.swap > .pill.next { opacity: 1; }
+.bar { --c: var(--grey); height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; flex: 1; }
+.bar > i { display: block; height: 100%; background: var(--c); border-radius: 2px; transition: width .6s cubic-bezier(.2,.7,.2,1); }
+.ptrue { display: flex; align-items: center; gap: 8px; min-width: 96px; }
+.ptrue .num { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); width: 30px; text-align: right; }
+/* status -> colour. Declared AFTER .pill/.bar so the same-specificity default above loses. */
+.c-active { --c: var(--active); } .c-needs_review { --c: var(--review); } .c-contradicted { --c: var(--contradicted); }
+.c-superseded { --c: var(--superseded); } .c-frozen { --c: var(--frozen); } .c-expired, .c-deleted, .c-unrelated { --c: var(--grey); }
+.c-confirmed { --c: var(--active); } .c-uncertain, .c-partial { --c: var(--review); } .c-hypothetical, .c-directive { --c: var(--grey); }
+.tag { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 5px; border-radius: 4px; background: var(--fg); color: var(--bg); margin-left: 6px; vertical-align: 1px; }
+/* ---------- top bar ---------- */
+.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.top .wrap { display: flex; align-items: center; gap: 16px; height: 48px; padding-bottom: 0; }
+.wordmark { font-weight: 600; letter-spacing: -.01em; font-size: 14px; text-decoration: none; }
+.tagline { color: var(--fg-3); }
+.ticker { margin-left: auto; display: flex; gap: 14px; color: var(--fg-2); font-family: var(--mono); font-size: 11.5px; }
+.ticker b { color: var(--fg); font-weight: 500; }
+/* ---------- banners ---------- */
+.banner { margin-top: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); display: flex; gap: 12px; align-items: center; }
+.banner.warn { border-color: color-mix(in srgb, var(--review) 40%, var(--line)); }
+.banner.result { animation: fadein .25s ease; }
+.banner .x { margin-left: auto; }
+.w-contradicted { color: var(--contradicted); } .w-superseded { color: var(--superseded); } .w-uncertain, .w-partial, .w-needs_review { color: var(--review); } .w-confirmed { color: var(--active); }
+@keyframes fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+/* ---------- hero ---------- */
+.hero { margin-top: 24px; padding: 20px; }
+.hero h1 { margin: 0 0 12px; font-size: 13px; font-weight: 500; color: var(--fg-2); text-transform: uppercase; letter-spacing: .06em; }
+.hero form { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+.hero .big { height: 44px; font-size: 15px; padding: 0 14px; }
+.hero .opts { grid-column: 1 / -1; display: flex; gap: 20px; align-items: center; color: var(--fg-2); flex-wrap: wrap; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.switch input { display: none; }
+.switch i { width: 28px; height: 16px; border-radius: 999px; background: var(--line-2); position: relative; transition: background .2s; }
+.switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--panel); transition: transform .2s; }
+.switch input:checked + i { background: var(--fg); }
+.switch input:checked + i::after { transform: translateX(12px); }
+kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; color: var(--fg-2); }
+/* ---------- tabs + toolbar ---------- */
+.tabs { display: flex; gap: 2px; margin-top: 24px; border-bottom: 1px solid var(--line); }
+.tab { border: 0; background: none; padding: 8px 12px; color: var(--fg-2); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
+.tab .n { color: var(--fg-3); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 16px 0 12px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; background: none; height: 30px; padding: 0 10px; color: var(--fg-2); border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--fg); }
+.seg .n { font-family: var(--mono); font-size: 11px; color: var(--fg-3); margin-left: 4px; }
+.toolbar .q { width: 220px; }
+.toolbar .grow { flex: 1; }
+.form { padding: 16px; margin-bottom: 12px; display: grid; grid-template-columns: 1fr 140px 140px 110px auto; gap: 8px; align-items: end; }
+.form label { display: grid; gap: 4px; font-size: 11.5px; color: var(--fg-2); }
+/* ---------- table ---------- */
+.tbl { width: 100%; border-collapse: collapse; table-layout: auto; }
+.tbl td:nth-child(2) { min-width: 0; }
+.tbl th { text-align: left; font-weight: 500; font-size: 11.5px; color: var(--fg-3); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.tbl td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl tr.row { transition: background .2s; }
+.tbl tr.row:hover { background: var(--panel-2); }
+.tbl .fact { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; cursor: pointer; }
+.tbl .fact:hover { text-decoration: underline; text-underline-offset: 3px; }
+.tbl .id { font-family: var(--mono); font-size: 10.5px; color: var(--fg-3); margin-top: 2px; }
+.tbl td.nowrap, .tbl th.nowrap { white-space: nowrap; }
+.acts { display: flex; gap: 2px; justify-content: flex-end; }
+.ico { width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--fg-3); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+.ico:hover { background: var(--panel-2); color: var(--fg); }
+.ico.on { color: var(--frozen); }
+.confirm { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--fg-2); white-space: nowrap; }
+.confirm button { border: 0; background: none; padding: 2px 4px; color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+tr.flash-active { animation: flash-active 1.2s ease-out; } tr.flash-needs_review { animation: flash-needs_review 1.2s ease-out; }
+tr.flash-contradicted { animation: flash-contradicted 1.2s ease-out; } tr.flash-superseded { animation: flash-superseded 1.2s ease-out; }
+tr.flash-frozen { animation: flash-frozen 1.2s ease-out; }
+@keyframes flash-active { from { background: color-mix(in srgb, var(--active) 15%, transparent); } to { background: transparent; } }
+@keyframes flash-needs_review { from { background: color-mix(in srgb, var(--review) 15%, transparent); } to { background: transparent; } }
+@keyframes flash-contradicted { from { background: color-mix(in srgb, var(--contradicted) 15%, transparent); } to { background: transparent; } }
+@keyframes flash-superseded { from { background: color-mix(in srgb, var(--superseded) 15%, transparent); } to { background: transparent; } }
+@keyframes flash-frozen { from { background: color-mix(in srgb, var(--frozen) 15%, transparent); } to { background: transparent; } }
+tr.new { animation: newpulse 2s ease-out; }
+@keyframes newpulse { 0% { background: color-mix(in srgb, var(--active) 18%, transparent); } 60% { background: color-mix(in srgb, var(--active) 10%, transparent); } 100% { background: transparent; } }
+/* vote strip: six tiny labeled bars under the fact */
+.votes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-top: 8px; max-width: 640px; } /* minmax(0,…) so the strip never widens the table */
+.votes.dim { opacity: .55; }
+.vote { font-size: 10px; color: var(--fg-3); display: grid; gap: 3px; min-width: 0; } /* min-width:0 so a long label truncates instead of spilling into the next column */
+.vote span { display: flex; justify-content: space-between; gap: 4px; font-family: var(--mono); white-space: nowrap; overflow: hidden; }
+.vote span em:first-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vote .bar { height: 3px; }
+.vote .bar > i { transition: width .3s ease-out; }
+.vlabel { font-size: 10.5px; margin-top: 6px; color: var(--fg-3); display: flex; gap: 8px; align-items: center; }
+.vlabel .d { --c: var(--grey); color: var(--c); font-weight: 500; }
+/* ---------- empty state / lists ---------- */
+.empty { padding: 40px 24px; text-align: center; color: var(--fg-2); }
+.empty h2 { margin: 0 0 6px; font-size: 15px; font-weight: 500; color: var(--fg); }
+.empty p { margin: 0 0 16px; }
+.list > .item { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.list > .item:last-child { border-bottom: 0; }
+.item .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.item .fact { font-family: var(--mono); font-size: 12.5px; word-break: break-word; }
+.item .meta { color: var(--fg-3); font-size: 11.5px; margin-top: 4px; }
+.item .ev { margin-top: 8px; padding: 8px 10px; background: var(--panel-2); border-radius: 8px; color: var(--fg-2); font-size: 12px; }
+.item .ev b { color: var(--fg); font-weight: 500; }
+.item .row-acts { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+.rel { display: flex; align-items: center; gap: 8px; width: 120px; }
+.rel .num { font-family: var(--mono); font-size: 11.5px; width: 30px; text-align: right; color: var(--fg-2); }
+.note { color: var(--fg-3); font-size: 11.5px; margin-top: 8px; }
+.qform { display: flex; gap: 8px; margin: 16px 0 12px; }
+.qform .input { flex: 1; }
+/* ---------- drawer ---------- */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 20; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100vw); background: var(--panel); border-left: 1px solid var(--line); z-index: 21; transform: translateX(100%); transition: transform .25s cubic-bezier(.2,.7,.2,1); display: flex; flex-direction: column; }
+body.open .overlay { opacity: 1; pointer-events: auto; } body.open .drawer { transform: none; }
+.drawer .dh { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.drawer .dh .x { margin-left: auto; }
+.drawer .db { flex: 1; overflow: auto; padding: 16px; }
+.drawer .df { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 6px; flex-wrap: wrap; }
+.fields { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size: 12px; }
+.fields dt { color: var(--fg-3); } .fields dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-word; }
+.dfact { font-family: var(--mono); font-size: 13px; padding: 10px 12px; background: var(--panel-2); border-radius: 8px; white-space: pre-wrap; word-break: break-word; margin: 0 0 16px; }
+.drawer h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); font-weight: 500; margin: 20px 0 10px; }
+.tl { border-left: 1px solid var(--line); margin-left: 5px; padding-left: 16px; display: grid; gap: 14px; }
+.tl .t { position: relative; }
+.tl .t::before { content: ""; position: absolute; left: -20px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); }
+.tl .etext { font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.tl .etext.open { -webkit-line-clamp: unset; }
+.tl .row2 { display: flex; gap: 8px; align-items: center; margin-top: 6px; color: var(--fg-3); font-size: 11.5px; flex-wrap: wrap; }
+.tl .votes { margin-top: 6px; max-width: none; grid-template-columns: repeat(6, 1fr); }
+.rw { margin-top: 12px; display: grid; gap: 8px; }
+/* ---------- toast ---------- */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 30; display: grid; gap: 8px; }
+.toast { background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: 10px; max-width: 380px; font-size: 12.5px; animation: fadein .2s; }
+/* ---------- responsive ---------- */
+@media (max-width: 720px) {
+  .wrap { padding: 0 16px 48px; }
+  .ticker { display: none; } .tagline { display: none; }
+  .hero form { grid-template-columns: 1fr; }
+  .form { grid-template-columns: 1fr 1fr; }
+  .form .span { grid-column: 1 / -1; }
+  .toolbar .q { width: 100%; }
+  .tbl .hide-sm { display: none; }
+  .votes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="wordmark" href="/" title="back to the playground">invalidate</a><span class="tagline">verbatim in, status out</span><a class="faint" href="/" style="text-decoration:none;font-size:12px">playground →</a>
+  <div class="ticker" id="ticker"></div>
+</div></header>
+
+<main class="wrap">
+  <div id="keybanner" class="banner warn hidden">TYPESAFE_API_KEY not set — remember/freeze/forget work, observe/recall need a key. Get one at <a href="https://console.typesafe.ai/" target="_blank" rel="noopener">console.typesafe.ai</a></div>
+
+  <!-- hero: observe -->
+  <section class="card hero">
+    <h1>Observe</h1>
+    <form id="obs">
+      <input id="obs-text" class="input big" placeholder="What happened? e.g. we migrated to SQLite last Tuesday" autocomplete="off">
+      <select id="obs-source" class="input" style="width:120px"><option>chat</option><option>slack</option><option>github</option><option>email</option><option>system</option><option>other</option></select>
+      <button id="obs-btn" class="btn primary" type="submit" style="height:44px;padding:0 18px">Observe</button>
+      <div class="opts">
+        <label class="switch"><input id="obs-succ" type="checkbox" checked><i></i>store successor</label>
+        <label class="switch"><input id="obs-dry" type="checkbox"><i></i>dry run</label>
+        <span class="faint">Every live memory is judged against the event. Six votes per pair; code decides the write. <kbd>/</kbd> to focus</span>
+      </div>
+    </form>
+  </section>
+
+  <div id="result" class="banner result hidden"></div>
+
+  <!-- tabs -->
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="memories">Memories</button>
+    <button class="tab" role="tab" data-tab="review">Review<span class="n" id="review-n"></span></button>
+    <button class="tab" role="tab" data-tab="recall">Recall</button>
+    <button class="tab" role="tab" data-tab="events">Events</button>
+  </div>
+
+  <!-- memories -->
+  <section id="tab-memories">
+    <div class="toolbar">
+      <div class="seg" id="seg"></div>
+      <input id="q" class="input q" placeholder="Filter facts…">
+      <span class="grow"></span>
+      <button id="clearvotes" class="btn link hidden">clear votes</button>
+      <button id="rem-toggle" class="btn">+ Remember</button>
+    </div>
+    <form id="rem" class="card form hidden">
+      <label class="span">fact <input id="rem-fact" class="input mono" placeholder="Stored verbatim, e.g. deploys run at 2pm UTC" required></label>
+      <label>kind <select id="rem-kind" class="input"><option>fact</option><option>preference</option><option>decision</option><option>config</option><option>schedule</option><option>chunk</option></select></label>
+      <label>source <input id="rem-source" class="input" value="human"></label>
+      <label>ttl (days) <input id="rem-ttl" class="input" type="number" min="0" step="any" placeholder="none"></label>
+      <button class="btn primary" type="submit">Remember</button>
+    </form>
+    <div class="card" id="memcard">
+      <table class="tbl"><thead><tr>
+        <th>status</th><th>fact</th><th class="hide-sm">kind</th><th class="hide-sm">source</th><th class="nowrap">p_true</th><th class="hide-sm nowrap">checked</th><th></th>
+      </tr></thead><tbody id="rows"></tbody></table>
+      <div id="empty" class="empty hidden"></div>
+    </div>
+  </section>
+
+  <!-- review -->
+  <section id="tab-review" class="hidden"><div class="card list" id="review" style="margin-top:16px"></div></section>
+
+  <!-- recall -->
+  <section id="tab-recall" class="hidden">
+    <form class="qform" id="rc"><input id="rc-q" class="input" placeholder="Ask the memory, e.g. which database should the new service use?"><label class="switch" style="white-space:nowrap"><input id="rc-review" type="checkbox"><i></i>include review</label><button class="btn primary" id="rc-btn" type="submit">Recall</button></form>
+    <div class="card list" id="rc-out"><div class="empty">Live memories ranked by relevance to your query.</div></div>
+    <p class="note">No embeddings. Relevance is a Jev vote per memory.</p>
+  </section>
+
+  <!-- events -->
+  <section id="tab-events" class="hidden"><div class="card list" id="events" style="margin-top:16px"></div></section>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"><div class="dh"><span id="d-pill"></span><span class="mono faint" id="d-id"></span><button class="btn ghost sm x" id="d-close">Esc</button></div><div class="db" id="d-body"></div><div class="df" id="d-foot"></div></aside>
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ============ state ============ */
+const S = { memories: [], counts: {}, stats: {}, demo: [], filter: 'all', q: '', tab: 'memories',
+            votes: {}, prev: {}, dry: false, fresh: null, newIds: {}, animVotes: false, drawer: null, histories: {}, busy: false };
+const VOTE_KEYS = [['bears','bears'],['still_true','still true'],['replaces','replaces'],['partial','partial'],['hypothetical','hypothetical'],['directive','directive']];
+const FILTERS = [['all','All'],['active','Active'],['needs_review','Review'],['contradicted','Contradicted'],['superseded','Superseded'],['frozen','Frozen']];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const usd = (x) => '$' + (x || 0).toFixed(5);
+const ms = (x) => x == null ? '–' : Math.round(x) + ' ms';
+const pct = (p) => Math.round((p || 0) * 100) + '%';
+function ago(t) {
+  if (!t) return 'never';
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 5) return 'just now';
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+const statusOf = (m) => (m.expired && (m.status === 'active' || m.status === 'needs_review')) ? 'expired' : m.status;
+const pill = (s, cls = '') => `<span class="pill c-${s} ${cls}">${s.replace('_', ' ')}</span>`;
+
+/* ============ api + toast ============ */
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j; try { j = await r.json(); } catch (e) { throw new Error(`${r.status} ${r.statusText}`); }
+  if (!j.ok) throw new Error(j.error || `${r.status}`);
+  return j;
+}
+function toast(msg) {
+  const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg;
+  $('toasts').appendChild(el); setTimeout(() => el.remove(), 6000);
+}
+const guard = (fn) => (...a) => fn(...a).catch((e) => toast(e.message));
+
+/* ============ load + ticker ============ */
+async function load() {
+  const j = await api('/api/state');
+  S.memories = j.memories; S.counts = j.counts; S.stats = j.stats; S.demo = j.demo_facts;
+  $('keybanner').classList.toggle('hidden', !!j.stats.has_key);
+  $('obs-btn').disabled = !j.stats.has_key || S.busy;
+  $('rc-btn').disabled = !j.stats.has_key;
+  renderAll();
+}
+function renderTicker() {
+  const st = S.stats, n = S.memories.filter((m) => statusOf(m) !== 'expired').length;
+  $('ticker').innerHTML = `<span><b>${esc(st.model || 'jev')}</b></span><span>last observe <b>${ms(st.latency_ms_last)}</b></span><span>session <b>${usd(st.cost_usd_total)}</b></span><span><b>${n}</b> memories</span>`;
+}
+function renderAll() { renderTicker(); renderSeg(); renderTable(); renderReviewTab(); if (S.tab === 'events') renderEvents(); }
+
+/* ============ segmented filter ============ */
+function renderSeg() {
+  $('seg').innerHTML = FILTERS.map(([k, label]) => {
+    const n = k === 'all' ? S.memories.length : (S.counts[k] || 0);
+    return `<button data-f="${k}" aria-pressed="${S.filter === k}">${label}<span class="n">${n}</span></button>`;
+  }).join('');
+  $('review-n').textContent = S.counts.needs_review ? ` ${S.counts.needs_review}` : '';
+}
+$('seg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { S.filter = b.dataset.f; renderSeg(); renderTable(); } });
+$('q').addEventListener('input', (e) => { S.q = e.target.value.toLowerCase(); renderTable(); });
+
+/* ============ table ============ */
+function visible() {
+  return S.memories.filter((m) => (S.filter === 'all' || m.status === S.filter) && (!S.q || m.fact.toLowerCase().includes(S.q) || m.id.includes(S.q)));
+}
+function voteStrip(v, compact, animate = true) {
+  const d = v.disposition, cls = d === 'unrelated' ? 'dim' : '';
+  const bars = VOTE_KEYS.map(([k, label]) => `<div class="vote"><span><em style="font-style:normal">${label}</em><em style="font-style:normal">${(v.votes[k] || 0).toFixed(2)}</em></span><div class="bar c-${d}"><i style="width:${animate ? '0' : pct(v.votes[k])}" data-w="${pct(v.votes[k])}"></i></div></div>`).join('');
+  const lab = compact ? '' : `<div class="vlabel"><span class="d c-${d}">${d === 'unrelated' ? '✓ unrelated' : d}</span>${v.from_status !== v.to_status ? `<span>${S.dry ? 'would: ' : ''}${v.from_status} → ${v.to_status}</span>` : (v.applied ? '' : '<span>no write</span>')}</div>`;
+  return `<div class="votes ${cls}">${bars}</div>${lab}`;
+}
+function actions(m) {
+  const s = statusOf(m), a = [];
+  if (s === 'frozen') a.push(`<button class="ico on" data-act="unfreeze" title="unfreeze">❄</button>`);
+  else if (s === 'active' || s === 'needs_review') a.push(`<button class="ico" data-act="freeze" title="freeze (pin: judged, never auto-flipped)">❄</button>`);
+  if (['contradicted', 'superseded', 'needs_review', 'expired'].includes(s)) a.push(`<button class="ico" data-act="restore" title="restore to active">↺</button>`);
+  a.push(`<button class="ico" data-act="forget?" title="forget (soft delete)">✕</button>`);
+  return `<div class="acts">${a.join('')}</div>`;
+}
+function rowHTML(m) {
+  const s = statusOf(m), v = S.votes[m.id], p = S.prev[m.id];
+  const changed = v && !S.dry && v.from_status !== v.to_status && p;
+  const pillHTML = changed ? `<span class="pillwrap">${pill(p.status, 'prev')}${pill(s, 'next')}</span>` : pill(s);
+  const p0 = p ? p.p_true : m.p_true;
+  const cls = [ 'row', changed ? `flash-${s}` : '', S.fresh === m.id ? 'new' : '' ].join(' ');
+  return `<tr class="${cls}" data-id="${m.id}">
+    <td class="nowrap">${pillHTML}</td>
+    <td><div class="fact" data-open="${m.id}">${esc(m.fact)}</div><div class="id">${m.id}${m.superseded_by ? ' → ' + m.superseded_by : ''}${isNew(m.id) ? '<span class="tag">new</span>' : ''}</div>${v ? voteStrip(v, false, S.animVotes) : ''}</td>
+    <td class="hide-sm muted">${esc(m.kind)}</td><td class="hide-sm muted">${esc(m.source)}</td>
+    <td><div class="ptrue"><div class="bar c-${s}"><i style="width:${pct(p0)}" data-w="${pct(m.p_true)}"></i></div><span class="num">${m.p_true.toFixed(2)}</span></div></td>
+    <td class="hide-sm muted nowrap">${ago(m.last_checked)}</td>
+    <td class="nowrap">${actions(m)}</td></tr>`;
+}
+const isNew = (id) => S.newIds[id] && Date.now() - S.newIds[id] < 10000;
+function markNew(id) { S.newIds[id] = Date.now(); setTimeout(() => { delete S.newIds[id]; if (S.tab === 'memories') renderTable(); }, 10100); }
+function renderTable() {
+  const rows = visible();
+  $('rows').innerHTML = rows.map(rowHTML).join('');
+  const empty = $('empty'); empty.classList.toggle('hidden', rows.length > 0);
+  if (!rows.length) empty.innerHTML = S.memories.length
+    ? `<p>No memories match this filter.</p>`
+    : `<h2>Nothing remembered yet</h2><p>Facts are stored verbatim. Observe an event and watch their status flip.</p><button class="btn primary" id="demo">Load the demo facts</button>`;
+  $('clearvotes').classList.toggle('hidden', !Object.keys(S.votes).length);
+  settle();
+}
+/* second frame: animate bars to their target widths and cross-fade pills */
+function settle() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('[data-w]').forEach((i) => { i.style.width = i.dataset.w; });
+    document.querySelectorAll('.pillwrap').forEach((w) => w.classList.add('swap'));
+    S.prev = {}; S.fresh = null; S.animVotes = false; // one-shot: later re-renders keep the votes but do not replay the flip
+  }));
+}
+function clearVotes() { S.votes = {}; S.prev = {}; S.dry = false; S.fresh = null; renderTable(); }
+$('clearvotes').addEventListener('click', clearVotes);
+
+/* table actions: open drawer, freeze/unfreeze/restore/forget (inline confirm) */
+$('memcard').addEventListener('click', guard(async (e) => {
+  const open = e.target.closest('[data-open]'); if (open) return openDrawer(open.dataset.open);
+  if (e.target.id === 'demo') return loadDemo();
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const id = b.closest('tr').dataset.id, act = b.dataset.act;
+  if (act === 'forget?') { b.parentElement.innerHTML = `<span class="confirm">forget? <button data-act="forget">yes</button> / <button data-act="cancel">no</button></span>`; return; }
+  if (act === 'cancel') return renderTable();
+  await doAction(id, act);
+}));
+async function doAction(id, act) {
+  const j = await api(`/api/memories/${id}/${act}`, {});
+  replaceMemory(j.memory); await load(); if (S.drawer === id) openDrawer(id);
+}
+function replaceMemory(m) { const i = S.memories.findIndex((x) => x.id === m.id); if (i >= 0) S.memories[i] = m; else S.memories.unshift(m); }
+async function loadDemo() {
+  for (const f of S.demo) await api('/api/remember', f);
+  toast(`Remembered ${S.demo.length} demo facts. Now observe: "we migrated to SQLite last Tuesday"`);
+  await load(); $('obs-text').focus();
+}
+
+/* ============ remember form ============ */
+$('rem-toggle').addEventListener('click', () => { $('rem').classList.toggle('hidden'); $('rem-fact').focus(); });
+$('rem').addEventListener('submit', guard(async (e) => {
+  e.preventDefault();
+  const days = parseFloat($('rem-ttl').value);
+  const j = await api('/api/remember', { fact: $('rem-fact').value, kind: $('rem-kind').value, source: $('rem-source').value || 'human', ttl_seconds: isNaN(days) ? null : days * 86400 });
+  $('rem-fact').value = ''; $('rem-ttl').value = ''; S.fresh = j.memory.id; markNew(j.memory.id); await load();
+}));
+
+/* ============ observe: the flip ============ */
+$('obs').addEventListener('submit', guard(async (e) => {
+  e.preventDefault();
+  const text = $('obs-text').value.trim(); if (!text || S.busy) return;
+  S.busy = true; $('obs-text').disabled = true; $('obs-btn').disabled = true; $('obs-btn').innerHTML = '<span class="spin"></span> judging';
+  try {
+    const dry = $('obs-dry').checked;
+    const prev = {}; S.memories.forEach((m) => { prev[m.id] = { status: statusOf(m), p_true: m.p_true }; });
+    const j = await api('/api/observe', { text, source: $('obs-source').value, dry_run: dry, remember_successor: $('obs-succ').checked });
+    const rep = j.report;
+    S.prev = prev; S.dry = !!rep.dry_run; S.animVotes = true; S.votes = {}; rep.verdicts.forEach((v) => { S.votes[v.memory_id] = v; });
+    S.fresh = rep.successor ? rep.successor.id : null; if (rep.successor) markNew(rep.successor.id); S.histories = {};
+    S.memories = j.memories;
+    $('obs-text').value = '';
+    S.filter = 'all'; if (S.tab !== 'memories') showTab('memories');
+    showResult(rep, dry);
+    await load();
+  } finally { S.busy = false; $('obs-text').disabled = false; $('obs-btn').innerHTML = 'Observe'; $('obs-btn').disabled = !S.stats.has_key; $('obs-text').focus(); }
+}));
+let resultTimer;
+function showResult(rep, dry) {
+  const n = {}; rep.verdicts.forEach((v) => { n[v.disposition] = (n[v.disposition] || 0) + 1; });
+  const parts = [`${rep.judged} judged`];
+  for (const d of ['contradicted', 'superseded', 'partial', 'uncertain', 'hypothetical', 'directive', 'confirmed']) if (n[d]) parts.push(`<span class="w-${d}">${n[d]} ${d === 'uncertain' || d === 'partial' ? 'needs review' : d}</span>`);
+  if (rep.screened_out) parts.push(`${rep.screened_out} screened out`);
+  parts.push(`${rep.requests} request${rep.requests === 1 ? '' : 's'}`, ms(rep.latency_ms), usd(rep.cost_usd));
+  const changed = rep.verdicts.filter((v) => v.from_status !== v.to_status).length;
+  const lead = dry ? `<b>dry run</b> · ${changed} would change ·` : `<b>${changed} changed</b> ·`;
+  const succ = rep.successor ? ` · <span class="w-confirmed">successor stored</span>` : '';
+  $('result').innerHTML = `${lead} ${parts.join(' · ')}${succ}<button class="btn ghost sm x" onclick="this.parentElement.classList.add('hidden')">✕</button>`;
+  $('result').classList.remove('hidden');
+  clearTimeout(resultTimer); resultTimer = setTimeout(() => $('result').classList.add('hidden'), 8000);
+}
+
+/* ============ tabs ============ */
+function showTab(t) {
+  S.tab = t;
+  document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === t));
+  ['memories', 'review', 'recall', 'events'].forEach((k) => $('tab-' + k).classList.toggle('hidden', k !== t));
+  if (t === 'review') renderReviewTab(); if (t === 'events') renderEvents(); if (t === 'recall') $('rc-q').focus();
+}
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+/* ============ review queue ============ */
+async function history(id) {
+  if (!S.histories[id]) S.histories[id] = (await api(`/api/memories/${id}/history`)).verdicts;
+  return S.histories[id];
+}
+function eventBlock(v) {
+  return v ? `<div class="ev"><b>${esc(v.event_source)}</b> · ${esc(v.event_text)}<div class="row2" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill c-${v.disposition}">${v.disposition}</span><span class="faint">${v.from_status} → ${v.to_status}</span><span class="faint">${ago(v.created_at)}</span></div>${voteStrip(v, true)}</div>` : '';
+}
+async function renderReviewTab() {
+  if (S.tab !== 'review') return;
+  const items = S.memories.filter((m) => m.status === 'needs_review');
+  const box = $('review');
+  if (!items.length) { box.innerHTML = `<div class="empty"><h2>Nothing to review.</h2><p>Facts land here when Jev's vote is genuinely uncertain, or when only part of a fact changed.</p></div>`; return; }
+  box.innerHTML = items.map((m) => `<div class="item" data-id="${m.id}"><div class="head">${pill(m.status)}<span class="fact" data-open="${m.id}" style="cursor:pointer">${esc(m.fact)}</span></div><div class="meta">${m.id} · ${esc(m.kind)} · ${esc(m.source)} · p_true ${m.p_true.toFixed(2)}</div><div class="evslot faint">loading verdict…</div>
+    <div class="row-acts"><button class="btn sm" data-act="restore">Keep</button><button class="btn sm" data-act="rewrite">Rewrite</button><button class="btn sm ghost" data-act="forget?">Forget</button></div><div class="rw hidden"><textarea class="input rw-text">${esc(m.fact)}</textarea><div><button class="btn sm primary" data-act="rewrite-save">Save as new fact</button></div></div></div>`).join('');
+  for (const m of items) {
+    const h = await history(m.id).catch(() => []);
+    const slot = box.querySelector(`[data-id="${m.id}"] .evslot`);
+    if (slot) { slot.className = 'evslot'; slot.innerHTML = eventBlock(h[0]) || '<span class="faint">no verdicts yet</span>'; }
+  }
+  settle();
+}
+$('review').addEventListener('click', guard(async (e) => {
+  const open = e.target.closest('[data-open]'); if (open) return openDrawer(open.dataset.open);
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const item = b.closest('.item'), id = item.dataset.id, act = b.dataset.act;
+  if (act === 'rewrite') return item.querySelector('.rw').classList.toggle('hidden');
+  if (act === 'rewrite-save') { await rewrite(id, item.querySelector('.rw-text').value); return; }
+  if (act === 'forget?') { b.outerHTML = `<span class="confirm">forget? <button data-act="forget">yes</button> / <button data-act="cancel">no</button></span>`; return; }
+  if (act === 'cancel') return renderReviewTab();
+  await doAction(id, act);
+}));
+async function rewrite(id, fact) {
+  const j = await api(`/api/memories/${id}/rewrite`, { fact });
+  S.fresh = j.new.id; markNew(j.new.id); toast(`Saved ${j.new.id}; ${j.old.id} is now superseded`);
+  await load(); if (S.drawer === id) openDrawer(id);
+}
+
+/* ============ recall ============ */
+$('rc').addEventListener('submit', guard(async (e) => {
+  e.preventDefault();
+  const q = $('rc-q').value.trim(); if (!q) return;
+  $('rc-btn').disabled = true; $('rc-btn').innerHTML = '<span class="spin"></span>';
+  try {
+    const j = await api('/api/recall', { query: q, limit: 10, include_review: $('rc-review').checked });
+    const out = $('rc-out');
+    out.innerHTML = (j.results.length ? j.results.map((r) => `<div class="item"><div class="head"><div class="rel"><div class="bar c-${r.memory.status}"><i style="width:0" data-w="${pct(r.relevance)}"></i></div><span class="num">${r.relevance.toFixed(2)}</span></div>${pill(r.memory.status)}<span class="fact" data-open="${r.memory.id}" style="cursor:pointer">${esc(r.memory.fact)}</span></div><div class="meta">${r.memory.id} · ${esc(r.memory.kind)} · ${esc(r.memory.source)}</div></div>`).join('') : `<div class="empty">No live memory is relevant enough.</div>`)
+      + `<div class="item faint">${j.results.length} of ${j.considered} considered · ${ms(j.latency_ms)} · ${usd(j.cost_usd)}</div>`;
+    settle(); await load();
+  } finally { $('rc-btn').disabled = false; $('rc-btn').textContent = 'Recall'; }
+}));
+$('rc-out').addEventListener('click', (e) => { const o = e.target.closest('[data-open]'); if (o) openDrawer(o.dataset.open); });
+
+/* ============ events ============ */
+async function renderEvents() {
+  const j = await api('/api/events?limit=50').catch((e) => { toast(e.message); return { events: [] }; });
+  $('events').innerHTML = j.events.length
+    ? j.events.map((ev) => `<div class="item"><div class="fact">${esc(ev.text)}</div><div class="meta">${esc(ev.source)} · ${ago(ev.created_at)} · ${ev.id}</div></div>`).join('')
+    : `<div class="empty">No events observed yet.</div>`;
+}
+
+/* ============ drawer ============ */
+async function openDrawer(id) {
+  const m = S.memories.find((x) => x.id === id); if (!m) return;
+  S.drawer = id; document.body.classList.add('open'); $('drawer').setAttribute('aria-hidden', 'false');
+  $('d-pill').innerHTML = pill(statusOf(m)); $('d-id').textContent = m.id;
+  const f = [['kind', m.kind], ['source', m.source], ['namespace', m.namespace], ['p_true', m.p_true.toFixed(2)], ['created', ago(m.created_at)], ['updated', ago(m.updated_at)],
+    ['last checked', ago(m.last_checked)], ['expires', m.expires_at ? new Date(m.expires_at * 1000).toLocaleString() : 'never (no hard ttl)'], ['superseded by', m.superseded_by || '–'], ['metadata', JSON.stringify(m.metadata || {})]];
+  $('d-body').innerHTML = `<p class="dfact">${esc(m.fact)}</p><dl class="fields">${f.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl><h3>History</h3><div id="d-hist" class="faint">loading…</div>`;
+  const s = m.status, foot = [];
+  if (['contradicted', 'superseded', 'needs_review', 'expired'].includes(statusOf(m))) foot.push(`<button class="btn sm" data-act="restore">Keep</button>`);
+  foot.push(`<button class="btn sm" data-act="rewrite">Rewrite</button>`);
+  foot.push(s === 'frozen' ? `<button class="btn sm" data-act="unfreeze">Unfreeze</button>` : `<button class="btn sm" data-act="freeze">Freeze</button>`);
+  foot.push(`<button class="btn sm ghost" data-act="forget?">Forget</button>`);
+  $('d-foot').innerHTML = foot.join('') + `<div class="rw hidden" style="width:100%"><textarea class="input rw-text">${esc(m.fact)}</textarea><div><button class="btn sm primary" data-act="rewrite-save">Save as new fact</button> <span class="faint">stores a new verbatim fact and marks this one superseded</span></div></div>`;
+  const h = await history(id).catch((e) => { toast(e.message); return []; });
+  if (S.drawer !== id) return;
+  $('d-hist').className = ''; $('d-hist').innerHTML = h.length ? `<div class="tl">${h.map((v) => `<div class="t"><div class="etext" onclick="this.classList.toggle('open')">${esc(v.event_text ?? v.event_id)}</div><div class="row2"><span class="faint">${esc(v.event_source ?? '')}</span><span class="pill c-${v.disposition}">${v.disposition}</span><span>${v.from_status} → ${v.to_status}${v.applied ? '' : ' (no write)'}</span><span>${ago(v.created_at)}</span></div>${voteStrip(v, true)}</div>`).join('')}</div>` : `<span class="faint">Never judged. Observe an event to see votes here.</span>`;
+  settle();
+}
+function closeDrawer() { S.drawer = null; document.body.classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); }
+$('overlay').addEventListener('click', closeDrawer); $('d-close').addEventListener('click', closeDrawer);
+$('d-foot').addEventListener('click', guard(async (e) => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const id = S.drawer, act = b.dataset.act;
+  if (act === 'rewrite') return $('d-foot').querySelector('.rw').classList.toggle('hidden');
+  if (act === 'rewrite-save') return rewrite(id, $('d-foot').querySelector('.rw-text').value);
+  if (act === 'forget?') { b.outerHTML = `<span class="confirm">forget? <button data-act="forget">yes</button> / <button data-act="cancel">no</button></span>`; return; }
+  if (act === 'cancel') return openDrawer(id);
+  if (act === 'forget') { await api(`/api/memories/${id}/forget`, {}); closeDrawer(); return load(); }
+  await doAction(id, act);
+}));
+
+/* ============ keyboard ============ */
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (e.key === 'Escape') { if (S.drawer) closeDrawer(); else if (typing) document.activeElement.blur(); }
+  if (e.key === '/' && !typing) { e.preventDefault(); $('obs-text').focus(); }
+});
+
+/* ============ boot ============ */
+showTab('memories');
+load().catch((e) => toast('Could not reach the server: ' + e.message));
+/* poll: pick up changes made from the CLI, the API or another tab. Re-render only when the data changed,
+   so open vote strips and inline confirms are left alone; the flip inputs are one-shot, so nothing replays. */
+const sig = () => JSON.stringify([S.memories, S.stats.cost_usd_total, S.stats.latency_ms_last]);
+setInterval(async () => {
+  if (S.busy || document.visibilityState !== 'visible') return;
+  const before = sig();
+  try { const j = await api('/api/state'); S.memories = j.memories; S.counts = j.counts; S.stats = j.stats; } catch (e) { return; }
+  if (sig() !== before) { renderAll(); if (S.drawer && !S.memories.some((m) => m.id === S.drawer)) closeDrawer(); }
+}, 5000);
+setInterval(() => { if (!S.busy && !S.drawer && S.tab === 'memories') renderTable(); }, 60000); // keep "checked" relative times fresh
+if (new URLSearchParams(location.search).get('demo') === '1') setTimeout(() => { // screenshot helper: auto-run the headline observe
+  $('obs-text').value = 'we migrated to SQLite last Tuesday'; $('obs').requestSubmit();
+}, 800);
+</script>
+</body>
+</html>

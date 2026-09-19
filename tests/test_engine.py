@@ -1143,7 +1143,7 @@ def test_observe_screens_large_pools_when_judge_supports_it(fake, make_mem):
     for i in ids:
         fake.script(i, CONTRADICT)
     r = mem.observe("we dropped Postgres")
-    assert calls["screen"] == [8, 8, 4]
+    assert sorted(calls["screen"]) == [4, 8, 8]  # batches run concurrently; invocation order is not guaranteed
     assert sum(calls["observe"]) == 5 and r.judged == 5 and r.screened_out == 15
     assert r.requests == 3 + 2  # 3 screen batches + ceil(5/3) full batches
     assert r.input_tokens == 3 * 7 + 2 * fake.tokens_per_call if hasattr(fake, "tokens_per_call") else True
