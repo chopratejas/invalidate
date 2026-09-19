@@ -76,5 +76,5 @@ Each host either adds and never removes (Mem0), checks only the ten nearest by
 similarity with a generative LLM (Graphiti), or hopes the agent notices (Letta).
 None can afford to re-judge every memory on every event with an LLM, and none
 ingests events that are not memories (a migration, an outage, a PR). Jev makes
-exhaustive judgment cost about $0.0004 per pair at 150 ms, and the Governor
+exhaustive judgment cost about $0.00006 per pair (about $0.00001 with screening) at 150 ms, and the Governor
 makes it host-agnostic. See COMPETITIVE.md.

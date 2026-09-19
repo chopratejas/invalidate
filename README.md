@@ -1,19 +1,39 @@
 # invalidate
 
-Semantic TTL for agent memory and RAG caches. Every stored fact is kept verbatim and gets a lease
-with two halves: a hard TTL your code enforces, and a semantic one that ends the moment new
-evidence says the fact no longer holds. When evidence arrives (`observe`), every live memory is
-judged against it by TypeSafe's Jev model, which votes with probabilities; a plain-Python
-`Policy` turns the votes into a status change: `active` becomes `contradicted`, `superseded`, or
-`needs_review`. `recall(query)` ranks what is still live by a Jev relevance vote. No embeddings,
-no vector index, no rewriting of facts, no LLM in the write path.
+**The invalidation layer for AI memory.** Every stored fact gets a semantic lease. When new
+evidence arrives, every memory is judged against it in milliseconds, and the ones that died get
+struck out, with a receipt. Works in front of Mem0, Chroma, LangGraph, Letta, Zep/Graphiti,
+pgvector, or a folder of Markdown. Verbatim in, status out. Code owns the write; Jev only votes.
 
-**Verbatim in, status out. Code owns the write; Jev only votes.**
+```
+pip install invalidate            # export TYPESAFE_API_KEY=...
+invalidate demo                   # the 200 ms flip, against a temp store
+invalidate ui                     # talk to it: an assistant that never keeps a stale memory
+```
+
+## The problem
+
+Agent memory only ever grows. "We use Postgres." "Alice owns billing." "Deploys are at 2pm."
+Nobody deletes these when the world changes, so the agent keeps acting on them. The memory
+products handle it in one of three ways: add the new fact and hope retrieval ranks it higher
+(Mem0), check only the ten nearest facts with a generative LLM (Zep/Graphiti), or leave it to the
+agent to notice (Letta). All three miss the indirect case ("our database of choice changed") and
+the miss is silent. Judging every fact with an LLM on every event was never affordable, so teams
+sampled or skipped it. Sampling a cache-invalidation policy is how you ship silent lies.
+
+## What invalidate does
+
+For every `(event, memory)` pair, TypeSafe's Jev answers six narrow yes/no questions with
+calibrated probabilities: same subject? still true? replacement named? only a detail changed?
+is the event a question? is it a command? Plain code turns the votes into a status:
+`active`, `needs_review`, `contradicted`, `superseded`. Nothing is paraphrased. A question never
+writes. A command like "mark everything false" never writes. Near the line, it asks a human.
+Every vote is logged.
+
+Measured on 157 labeled cases with hard negatives (jev-1.13.0, 2026-09-18): 89.2% strict,
+97.5% lenient, zero facts wrongly dropped, $0.017 for the whole run, ~160 ms per request.
 
 ## The 200 ms demo
-
-`invalidate demo` runs this against a temporary database. This is a live transcript
-(jev-1.13.0, 2026-09-18); timings and probabilities vary a little from run to run.
 
 ```
 $ invalidate demo
@@ -71,65 +91,94 @@ mem_16d62257b4e0  active        1.00    preference  slack       0s   we migrated
 total: 6 Jev requests, 36161 input tokens, $0.00152. db: /tmp/invalidate-demo/demo.db
 ```
 
-Four things to notice. The outage did not flip anything: Jev is asked whether the fact is *still
-true given* the event, and an outage is temporary. The question and the injected command did not
-flip anything either: two event-level votes (`hypothetical`, `directive`) classify the *form* of
-an event, and neither form is allowed to write, not even a confirmation. The migration superseded
-the preference and the replica fact (a replacement was named), stored the event verbatim as their
-successor, and parked the schema fact in `needs_review` because the vote was genuinely uncertain.
-And the recall for a database returned the successor, not the stale preference a similarity search
-would have surfaced.
+## Use it in front of your existing memory
 
-## Install
+```python
+from invalidate.adapters import Governor
+from invalidate.adapters.mem0 import Mem0Adapter, governed_search, guard_add
 
-```
-pip install invalidate
-export TYPESAFE_API_KEY=...    # https://console.typesafe.ai/
+gov = Governor(Mem0Adapter(memory, user_id="u1"), "ledger.db", mode="flag", successors=True)
+gov.sync()                                                     # pull Mem0 into the ledger
+gov.observe("we migrated to SQLite last Tuesday", source="slack")   # every memory judged; stale ones flagged in Mem0
+results = governed_search(memory, gov, "which database?")      # dead and reviewed memories never reach the prompt
+add = guard_add(memory, gov)                                   # user text is judged before Mem0 stores it
 ```
 
-`remember`, `ls`, `show`, `freeze` and friends work without a key. `observe`, `recall` and `demo`
-need one. The CLI and the examples also read `TYPESAFE_API_KEY=...` from a `./.env` file; the
-library itself does not (pass `api_key=` or export it). Optional extras: `invalidate[openai]`,
-`invalidate[anthropic]`.
+| host | status |
+|---|---|
+| Mem0 (OSS and platform) | live-verified |
+| Chroma | live-verified |
+| LangGraph store | live-verified |
+| Markdown: CLAUDE.md, AGENTS.md, Claude Code memory notes, runbooks | live-verified; `invalidate govern md` |
+| pgvector / Pinecone / Qdrant / anything | four callables, unit-tested |
+| Letta (archival passages, core blocks) | mirrored SDK, mock-tested |
+| Zep / Graphiti (entity edges, `invalid_at`) | mirrored SDK, mock-tested |
 
-## Quickstart
+Three modes: `flag` writes an `invalidate_status` receipt into the host record (reversible,
+default), `delete` removes dead rows, `ledger` judges and logs and touches nothing. See
+[ADAPTERS.md](ADAPTERS.md) and `docs/adapters/`.
+
+## Standalone
 
 ```python
 from invalidate import Invalidate
-
-mem = Invalidate("memories.db")                       # SQLite; any Store works
-mem.remember("user prefers Postgres", kind="preference", source="chat")
-mem.remember("deploys run at 2pm UTC", source="wiki")
-
-report = mem.observe("we migrated to SQLite last Tuesday", source="slack")
-for v in report.changed:                              # one Verdict per (event, memory)
-    print(v.memory_id, v.from_status.value, "->", v.to_status.value, v.votes)
-
-for r in mem.recall("which database?").results:       # live memories only, ranked
-    print(f"{r.relevance:.2f} {r.memory.fact}")
+mem = Invalidate("memories.db")
+mem.remember("user prefers Postgres", source="chat", kind="preference", ttl=90*86400)
+report = mem.observe("we migrated to SQLite last Tuesday", source="slack", remember_successor=True)
+report.summary()          # '6 judged, 2 superseded, 1 req, 171 ms, $0.00035'
+mem.recall("which database?").memories   # the successor, not the stale preference
+mem.freeze(id) / mem.restore(id) / mem.forget(id) / mem.history(id)
 ```
+
+## Why this matters
+
+**For any developer with an agent.** Your agent's memory is a cache with no invalidation.
+invalidate is the invalidation. Ten lines in front of whatever you already use, and the stale
+facts stop reaching the prompt. The verdict log answers "why did it think that?" for the first
+time.
+
+**For enterprises.** The memory behind a support bot, an internal assistant, or a coding agent is
+a liability the moment it is wrong: a customer told the old plan price, an engineer paged the
+person who left, a deploy scheduled in a window that moved. Today the only controls are a nightly
+LLM sweep over a sample, or nothing. invalidate gives you exhaustive, event-driven checking at a
+price that runs on every message, a human review queue for the genuinely uncertain, source
+trust rules (a customer email may flag, never flip), an audit trail of every vote, and no
+rewriting of stored text. It sits in front of the store you already chose, and it is host
+neutral, so it also works across stores.
+
+**Why Jev and not an LLM judge.** Jev is a System One model: it does not generate, it answers
+typed questions with calibrated probabilities in about 150 ms at $0.042 per million input tokens.
+That changes what is possible, not just what it costs:
+
+- *Exhaustive instead of sampled.* Every memory, every event. Measured: 500 memories against one
+  event in 8 requests, 0.8 s, $0.006.
+- *In the request path.* Fast enough to gate a write before it lands, not a nightly job.
+- *Thresholds instead of prose.* Six probabilities per pair let code own the policy: a dead band
+  near the line, questions and commands that never write, sources that may only flag. You cannot
+  do that with a model that returns "yes".
+- *Stable.* The same question on the same state returns the same numbers, so the policy can be
+  tuned against a labeled set and stays tuned.
+
+## ROI, with the numbers we measured
+
+Per `(event, memory)` pair, full judgment costs about 1,400 input tokens, or **$0.00006**. With
+the built-in screen (used above 200 memories) it is about **$0.00001**.
+
+| workload | invalidate / month | LLM judge, cheap model ($0.0002/pair, 1 to 3 s) | LLM judge, frontier ($0.005 to $0.05/pair) |
+|---|---|---|---|
+| 200 memories, 200 events/day | $7 (unscreened) | $240 | $6,000 to $60,000 |
+| 1,000 memories, 500 events/day | $180 (screened) | $3,000 | $75,000+ |
+| 10,000 memories, 2,000 events/day | ~$7,000 (screened); prefilter with `candidates=` to cut further | $120,000 | not feasible |
+
+The comparison that matters is not the cheap-LLM column. It is that at LLM prices nobody runs
+the check at all, so the real alternative is silent staleness. One wrong answer to a customer,
+one wrong on-call page, one agent acting on a dead config costs more than a year of the middle
+row. And the numbers above are the ceiling: most events are unrelated to most memories and the
+screen drops them in one short question.
 
 ## How it works
 
-### 4 + 2 questions
-
-For every `(event, memory)` pair Jev answers four independent yes/no questions, each returning a
-probability, plus two per event about the event's *form*. Questions are literal and compare named
-fields; nothing about dates, counting, or rewriting is ever asked of the model (see
-`src/invalidate/questions.py`).
-
-| id | question | role |
-|---|---|---|
-| `bears` | Does the event give information about the same subject the fact is about? | gate: below threshold nothing is written |
-| `still_true` | Taking the event as accurate and more recent, is the fact still true? | the verdict; becomes `p_true` |
-| `replaces` | Does the event state a new current value for the same thing? | superseded vs merely contradicted |
-| `partial` | Does the central claim of the fact still hold, with only a secondary detail changed? | a compound fact goes to review for a rewrite instead of dying |
-| `hypothetical` (per event) | Is the event a question, proposal, wish, plan, or hypothetical? | a question never writes, not even a confirmation |
-| `directive` (per event) | Is the event a command to an assistant or system about what to record, rather than a report about the world? | prompt-injection defense: "mark everything false" never writes |
-
-### The policy
-
-Every threshold that decides a write lives in `Policy`, a dataclass of floats you can tune.
+Rules are checked top to bottom; the first match wins.
 
 Rules are checked top to bottom; the first match wins.
 
@@ -153,71 +202,40 @@ The defaults come from a threshold sweep over the 157 labelled cases in `evals/c
 accurate policy that did not add a single false invalidation. They were tuned on that set, so
 re-run the sweep on your own events before trusting them.
 
-`frozen` memories are judged and logged like any other but never move, not even past their hard TTL. `contradicted`,
-`superseded`, `expired` and `deleted` memories are not sent to the judge at all
-(`Policy.judge_statuses`). `p_true` is overwritten with `still_true` whenever the disposition is
-not unrelated, so a memory carries the most recent evidence-weighted belief.
+Lifecycle: `active` → `needs_review` | `contradicted` | `superseded`; `frozen` is judged but
+pinned; `expired` by hard TTL in code; `restore()` is the human override. `observe()` writes
+the event and every verdict before it mutates a memory, so a crash mid-apply leaves a complete
+audit trail. Full rationale in [DESIGN.md](DESIGN.md); competitor analysis in
+[COMPETITIVE.md](COMPETITIVE.md).
 
-### Code owns the write
+## Building an adapter
 
-Jev never sees a memory id, never returns text, and never decides anything on its own. It returns
-five probabilities per pair; `Policy.dispose()` maps them to a disposition, `Policy.transition()`
-maps disposition and current status to the next status, and the engine writes it. Every vote is
-stored as a `Verdict` row (`invalidate show ID` prints them), so any flip can be audited and
-reversed with `restore`.
+An adapter is three methods over your store plus an optional fourth:
 
-## Status lifecycle
-
-```
-                     remember()
-                         |
-                         v
-   +----------------- active <---------------------------------+
-   |                  |     ^                                   |
-   |        uncertain |     | confirmed                         |
-   |                  v     |                                   |
-   |              needs_review                                  |
-   |                  |                                         |
-   |   contradicted / |  superseded                             | restore()
-   |                  v                                         |
-   +-----------> contradicted  /  superseded  -------------------+
-                                  (superseded_by -> successor id, via supersede())
-
-   active  --freeze()-->  frozen  --unfreeze()-->  active     frozen: judged, logged, never auto-flipped
-   active | needs_review | frozen  --hard ttl elapsed, sweep()-->  expired
-   anything  --forget()-->  deleted
+```python
+class MyAdapter:
+    name = "mystore"
+    def pull(self): ...                       # yield HostMemory(id, text) - verbatim, read-only
+    def flag(self, host_id, reason): ...      # write reason.as_metadata() (or reason.line()) into the host
+    def delete(self, host_id, reason): ...
+    def insert(self, text, source, metadata): ...   # optional: store a successor verbatim, return its id
 ```
 
-Only `active` and `frozen` are returned by `recall()` (`include_review=True` adds `needs_review`).
+Copy `InMemoryAdapter` in `src/invalidate/adapters/base.py`, mirror your SDK's real signatures
+(cite them), write tests against a faithful fake, and add a `docs/adapters/<host>.md` with the
+host's real limits. [CONTRIBUTING.md](CONTRIBUTING.md) has the checklist.
 
-## Typed leases
+## What invalidate is not
 
-`remember(fact, kind=..., ttl=...)` gives every fact a kind and two leases:
+Not a memory store, not a vector database, not an agent, not an extractor. It never rewrites a
+fact, never embeds anything, and never decides on its own: Jev votes, code writes, humans
+override.
 
-- **hard ttl** (seconds): pure code. `sweep()` marks it `expired` when the clock says so, no model
-  call. Use it for anything that must be re-fetched on a schedule (RAG chunks, quotes, prices).
-- **semantic ttl**: ends when `observe()` sees evidence that the fact no longer holds. There is no
-  clock; a fact from 2019 stays active until something contradicts it.
+## Evaluation and tuning
 
-`kind` (`preference`, `chunk`, `schema`, whatever you like) and `source` are shown to Jev alongside
-the fact and help it judge; they are also what you filter on when you pre-select `candidates` for
-`observe()` instead of judging the whole namespace.
-
-## Cost and latency
-
-Jev is a small, fast model: about 100 ms per request, $0.042 per million input tokens, output
-free. Memories are batched 20 to a request (`Policy.batch_size`) and batches run concurrently
-(`Policy.max_workers`), so per event:
-
-- requests: `ceil(N / 20)`, wall-clock roughly one Jev round trip while N <= 160
-- tokens: about 17k per 20-memory batch (the demo measured 6.5k for 6)
-- cost: `17,000 x 0.042 / 1,000,000 = $0.0007` per event per 20 memories
-
-So an agent with 200 memories pays about $0.007 and ~200 ms to check every one of them against
-every new message. That is why nothing is sampled or pre-filtered by default. For contrast, an LLM
-judge at typical frontier pricing costs $0.01 to $0.05 and 3 to 20 s *per pair*; at 200 memories
-you would be sampling, and sampling is how stale facts survive. `recall()` asks one question per
-memory and is cheaper still (the demo: $0.00004 for 3 memories).
+`python evals/run_eval.py` runs the 157 labeled cases live and sweeps 3,600 policies offline
+from the cached votes; `--dry-run` needs no key. Defaults were tuned on that set, so re-run on
+your own events before trusting them. `evals/README.md` explains the categories.
 
 ## CLI
 
@@ -240,122 +258,9 @@ invalidate demo
 Exit codes: 0 ok, 1 TypeSafe API error or unknown id, 2 missing API key or bad arguments.
 `--json` prints full dataclasses, including every vote on `observe`.
 
-## Drop-in wrappers
-
-Ten lines, no new abstractions. `wrap()` proxies the one method you already call: before it, the
-latest user message is used to `recall()` live facts, which are merged into the system prompt as
-
-```
-Known facts (verbatim, governed by invalidate):
-- user prefers Postgres
-```
-
-and after it the same message is `observe()`d, so "we moved off Postgres" flips the stale fact.
-
-```python
-from invalidate import Invalidate
-from invalidate.integrations.openai import wrap          # or .anthropic
-
-client = wrap(OpenAI(), Invalidate("agent.db"))
-client.chat.completions.create(model="gpt-4o-mini", messages=[...])   # unchanged call
-client.completions.last_report                                       # the ObserveReport
-```
-
-Flags: `inject=False`, `observe=False`, `observe_first=True` (judge the turn *before* recalling,
-so a correction in the same turn is applied to what the model sees, at the cost of one extra hop
-up front; the default observes after the call so the response is not delayed), `limit=8`,
-`source="user"`. `memory_block(mem, query)` and `observe_turn(mem, text)` are exposed separately
-for hand-rolled prompts. Neither module imports its SDK until you call `make_client()`. See
-`examples/openai_agent.py`, `examples/anthropic_agent.py` and `examples/rag_cache.py`.
-
-## Policy tuning and the eval harness
-
-Thresholds are data, not prompts:
-
-```python
-from invalidate import Invalidate, Policy
-mem = Invalidate("m.db", policy=Policy(contradict_max=0.25, replace_min=0.7, hypothetical_max=0.6))
-```
-
-`observe(text, dry_run=True)` returns verdicts without writing, and `invalidate observe --dry-run`
-does the same from the shell, so you can replay a corpus of events against a real store and diff
-the flips. `evals/run_eval.py` runs the labelled cases in `evals/cases.py` through the judge and applies
-the policy; `python evals/run_eval.py --dry-run` swaps in a keyword-based fake judge so the
-harness itself runs without a key. Tune thresholds against that, not by hand.
-
-Live numbers for the shipped questions and defaults (jev-1.13.0, 2026-09-18, `evals/results/v4.json`):
-
-| | |
-|---|---|
-| cases | 157 across 16 categories, each with hard negatives |
-| strict accuracy | 89.2% |
-| lenient accuracy (any label a careful reviewer would accept) | 97.5% |
-| false invalidations (a fact wrongly dropped) | 0 of 157 |
-| cost for the whole run | $0.017 |
-| latency per request | mean 166 ms, p95 268 ms |
-
-Every strict miss and its six probabilities are printed by the runner, and
-`--from evals/results/v4.json` replays the sweep offline in under a second.
-
-### Scaling: judge everything, screen first
-
-By default every judgeable memory in the namespace is judged on every event. Above
-`Policy.screen_above` (200) memories, `observe` runs a cheap bears-only screen first, one short
-question per memory at 100 memories per request, and sends only the memories that pass it to the
-full six-question judgment. It is still Jev deciding relevance, not a keyword or vector shortcut.
-Measured live (`scripts/scale_check.py`):
-
-| | requests | tokens | cost | wall | flips |
-|---|---|---|---|---|---|
-| 500 memories, no screen | 25 | 872k | $0.037 | 1.5 s | 10 of 10 |
-| 500 memories, screened | 8 | 151k | $0.006 | 0.8 s | 10 of 10 |
-
-Over the 157 eval pairs the screen never dropped a pair the full `bears` vote called bearing.
-
-## What invalidate is not
-
-- **Not a rewriter.** Facts are never edited or merged. A superseded fact keeps its text and gets
-  `superseded_by` pointing at the verbatim successor you `remember()`ed.
-- **Not embeddings, not a vector DB.** There is no index; every live memory is judged against every
-  event and every query, which is affordable because Jev is cheap.
-- **Not an agent.** It has no tools, no loop, no prompts to your LLM. It is a governor you put in
-  front of a store.
-- **Not a compactor.** Nearby projects handle different problems: fast-jev-compaction deletes
-  transcript blobs, hermes-jev keeps/pins/drops inside one agent, jevsql flags row changes.
-
-## Pluggable Store and Judge
-
-Both are `typing.Protocol`s; the defaults are `SQLiteStore` and `JevJudge`.
-
-```python
-class Store(Protocol):
-    def add_memory(self, m: Memory) -> None: ...
-    def get_memory(self, memory_id: str) -> Memory | None: ...
-    def update_memory(self, m: Memory) -> None: ...
-    def list_memories(self, namespace=None, statuses=None, limit=None) -> list[Memory]: ...
-    def add_event(self, e: Event) -> None: ...
-    def get_event(self, event_id: str) -> Event | None: ...
-    def list_events(self, namespace=None, limit=None) -> list[Event]: ...
-    def add_verdicts(self, verdicts: Iterable[Verdict]) -> None: ...
-    def list_verdicts(self, memory_id=None, event_id=None) -> list[Verdict]: ...
-    def close(self) -> None: ...
-
-class Judge(Protocol):
-    def observe(self, event: Event, memories: list[Memory]) -> ObserveBatch: ...
-    def recall(self, query: str, memories: list[Memory]) -> RecallBatch: ...
-```
-
-`Invalidate(store, judge=MyJudge())` takes either; a deterministic judge is how the tests run
-without a key. `on_transition=callback` fires on every flip if you would rather push status changes
-into your own system than poll.
-
 ## Roadmap
 
-- async client (`AsyncTypeSafeClient` is already in the SDK)
-- Postgres store
-- Mem0 / Zep adapters that keep their stores and use invalidate as the governor
-- recall-time re-check: judge the top results against the current conversation before injecting
+Async client; a Postgres ledger; a hosted event ingester for Slack, GitHub and Linear webhooks;
+a second labeled set the defaults were not tuned on; Cognee and Vercel AI SDK adapters.
 
-## License
-
-MIT
+MIT. Built on [TypeSafe Jev](https://typesafe.ai).
