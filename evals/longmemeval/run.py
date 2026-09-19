@@ -33,6 +33,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -41,6 +42,59 @@ sys.path.insert(0, str(ROOT / "src"))
 from invalidate import Invalidate, Policy  # noqa: E402
 from invalidate.adapters import Governor, InMemoryAdapter  # noqa: E402
 from invalidate.env import load_dotenv  # noqa: E402
+from invalidate.judge import JevJudge  # noqa: E402
+
+
+class CachingJudge(JevJudge):
+    """JevJudge whose raw responses are cached on disk by a hash of (state, questions). Jev is deterministic for
+    the same input, so a rerun of the same questions (a k sweep, a re-score) costs nothing after the first pass."""
+
+    def __init__(self, cache_dir: Path, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.hits = 0
+        self.misses = 0
+
+    def _call(self, state: Any, questions: Any) -> Any:
+        payload = json.dumps({"state": state, "questions": {k: _q_dump(v) for k, v in questions.items()}, "model": self.model},
+                             sort_keys=True, default=str)
+        key = hashlib.sha1(payload.encode()).hexdigest()
+        f = self.cache_dir / f"{key}.json"
+        if f.exists():
+            self.hits += 1
+            d = json.loads(f.read_text())
+            return _Resp(d["answers"], d["input_tokens"], d["model"])
+        resp = super()._call(state, questions)
+        self.misses += 1
+        answers = {k: float(getattr(a, "noul")) for k, a in resp.answers.items()}
+        usage = getattr(resp, "usage", None)
+        toks = int(getattr(usage, "input_tokens", 0) or 0)
+        f.write_text(json.dumps({"answers": answers, "input_tokens": toks, "model": getattr(resp, "model", None)}))
+        return _Resp(answers, toks, getattr(resp, "model", None))
+
+
+def _q_dump(q: Any) -> Any:
+    for attr in ("model_dump", "dict"):
+        fn = getattr(q, attr, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:  # noqa: BLE001
+                pass
+    return repr(q)
+
+
+class _Ans:
+    def __init__(self, p: float) -> None:
+        self.noul = p
+
+
+class _Resp:
+    def __init__(self, answers: dict[str, float], input_tokens: int, model: Any) -> None:
+        self.answers = {k: _Ans(v) for k, v in answers.items()}
+        self.usage = type("U", (), {"input_tokens": input_tokens})()
+        self.model = model
 
 ENV = load_dotenv(str(ROOT / ".env"))
 
@@ -273,7 +327,8 @@ def run_question(q: dict, arm: str, k: int, models: Models, policy_kw: dict, hos
     host = FactsHost(models, extract_model, HERE / "results" / "extract_cache") if host_kind == "facts" else TurnsHost(models)
     gov = None
     if arm == "inv":
-        gov = Governor(HostAdapter(host), ":memory:", mode="ledger", lazy=True, policy=Policy(**policy_kw))
+        judge = CachingJudge(HERE / "results" / "jev_cache", api_key=env("TYPESAFE_API_KEY"))
+        gov = Governor(HostAdapter(host), ":memory:", mode="ledger", lazy=True, policy=Policy(**policy_kw), judge=judge)
     n_turns = 0
     for i in order:
         sid = q["haystack_session_ids"][i]
