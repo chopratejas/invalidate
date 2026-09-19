@@ -8,12 +8,12 @@ version = "0.1.0"
 description = "Semantic TTL for agent memory and RAG caches. Every stored fact gets a typed lease; new evidence is judged against every memory by Jev; code owns the write."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 keywords = ["agent-memory", "rag", "cache-invalidation", "typesafe", "jev", "llm"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Topic :: Software Development :: Libraries",
 ]

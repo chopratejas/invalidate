@@ -10,7 +10,7 @@ Every fact your agent remembers gets a lease. New evidence ends it. In 150 ms. F
 [![false invalidations](https://img.shields.io/badge/false%20invalidations-0%20of%20157-2ea44f?style=flat-square)](evals/README.md)
 [![cost](https://img.shields.io/badge/cost-%240.00006%20per%20fact%20%C3%97%20event-8a2be2?style=flat-square)](#-what-it-costs)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![license](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache%202.0-lightgrey?style=flat-square)](LICENSE)
 [![built on](https://img.shields.io/badge/built%20on-TypeSafe%20Jev-111?style=flat-square)](https://typesafe.ai)
 
 <img src="docs/img/chat.png" alt="An assistant that never keeps a stale memory: the conversation on the left, what it remembers on the right, stale facts struck out with a receipt" width="860">
@@ -337,6 +337,6 @@ Async client · Postgres ledger · hosted event ingester for Slack, GitHub and L
 
 [DESIGN.md](DESIGN.md) · [ADAPTERS.md](ADAPTERS.md) · [COMPETITIVE.md](COMPETITIVE.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [evals](evals/README.md)
 
-MIT · built on [TypeSafe Jev](https://typesafe.ai)
+Apache 2.0 · built on [TypeSafe Jev](https://typesafe.ai)
 
 </div>
