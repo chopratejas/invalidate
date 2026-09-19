@@ -473,15 +473,16 @@ def test_status_of_dead_ids_review(gov, fake):
     assert gov.status_of("c") is Status.NEEDS_REVIEW
 
 
-def test_filter_hides_dead_and_optionally_review(gov, fake):
+def test_filter_hides_dead_and_reviewed_by_default(gov, fake):
     fake.script("memory:a", SUPERSEDE).script("memory:c", UNCERTAIN)
     gov.sync()
     gov.observe("everything changed", source="slack")
     results = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "unknown"}]
+    # A fact flagged for a human must not reach the model until the human decides.
     kept = gov.filter(results, id_of=lambda r: r["id"])
-    assert [r["id"] for r in kept] == ["b", "c", "unknown"]
-    kept = gov.filter(results, id_of=lambda r: r["id"], include_review=False)
     assert [r["id"] for r in kept] == ["b", "unknown"]
+    kept = gov.filter(results, id_of=lambda r: r["id"], include_review=True)
+    assert [r["id"] for r in kept] == ["b", "c", "unknown"]
 
 
 def test_filter_coerces_ids_to_str(gov, fake):

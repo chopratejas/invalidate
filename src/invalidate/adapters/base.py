@@ -267,8 +267,10 @@ class Governor:
     def review(self) -> list[Memory]:
         return self.mem.list(statuses=[Status.NEEDS_REVIEW])
 
-    def filter(self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = True) -> list[Any]:
-        """Drop host results whose memory is dead (and optionally under review). Unknown ids pass through."""
+    def filter(self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = False) -> list[Any]:
+        """Drop host results whose memory is dead or under review. Unknown ids pass through.
+        Reviewed memories are hidden by default: a fact flagged for a human should not reach the model
+        until the human decides (`keep()` or `forget()`). Pass include_review=True to serve them anyway."""
         hide = set(self.dead_ids())
         if not include_review:
             hide |= {self.host_id(m) for m in self.review()}

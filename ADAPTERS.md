@@ -48,7 +48,8 @@ and a timestamp. `Reason.as_metadata()` is what metadata-capable hosts get;
   host; reviews are still flagged. `mode="ledger"`: judge and log, touch nothing.
 - `successors=True`: when an event supersedes memories, insert the event text
   verbatim into the host and link the dead rows to it.
-- `filter(results, id_of=...)`: drop dead ids from any host search result.
+- `filter(results, id_of=...)`: drop dead and reviewed ids from any host search result
+  (reviewed rows are hidden until a human calls `keep()` or `forget()`).
 - `guard(host.add)`: wrap the host's write path so incoming user text is judged
   against memory before it is stored.
 - `keep(id)` / `forget(id)`: human overrides, mirrored both ways.
@@ -63,7 +64,7 @@ and a timestamp. `Reason.as_metadata()` is what metadata-capable hosts get;
 | Chroma | `adapters.chroma` | collection.get | metadata merge | collection.delete | collection.add | live |
 | any vector store (pgvector, Pinecone, Qdrant, ...) | `adapters.vectorstore` | your `list_fn` | your `update_metadata_fn` | your `delete_fn` | your `insert_fn` | unit |
 | LangGraph store | `adapters.langgraph` | store.search | put (merged) | store.delete | put | live (InMemoryStore) |
-| Mem0 (OSS and platform) | `adapters.mem0` | get_all | metadata (see limits) | delete | add(infer=False) | signatures mirrored |
+| Mem0 (OSS and platform) | `adapters.mem0` | get_all | metadata (see limits) | delete | add(infer=False) | live (OSS 2.1.0) |
 | Letta | `adapters.letta` | archival passages, block lines | note passage / annotated block line | passage or line removed | passage | signatures mirrored |
 | Zep / Graphiti | `adapters.graphiti` | entity edges' `fact` | `invalid_at` set | same as flag (history kept) | add_episode | signatures mirrored |
 

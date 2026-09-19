@@ -55,7 +55,7 @@ for r in memory.get_all(filters=FILTERS, top_k=1000)["results"]:
     print(f"  [{st:12s}] {r['memory'][:60]:60s} {('<- '+ev[:50]) if ev else ''}")
 
 print("\ngoverned_search('which database should the new service use?'):")
-for r in governed_search(memory, gov, "which database should the new service use?", filters=FILTERS, top_k=5):
+for r in governed_search(memory, gov, "which database should the new service use?", filters=FILTERS, top_k=5)["results"]:
     print(f"  {r.get('score', 0):.2f}  {r['memory']}")
 print("plain Mem0 search for comparison:")
 for r in memory.search("which database should the new service use?", filters=FILTERS, top_k=3)["results"]:
