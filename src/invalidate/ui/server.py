@@ -165,6 +165,20 @@ class Session:
         # `self.mem.judge` resolves the API key once and is shared; check() builds its own in-memory store.
         return playground.check(str(body.get("facts", "")), str(body.get("events", "")), self.mem.judge)
 
+    def chat(self, body: dict[str, Any]) -> dict[str, Any]:
+        from . import chat as chatmod
+
+        judge = self.mem.judge
+        facts = body.get("facts") or []
+        if not isinstance(facts, list):
+            raise ValueError("facts must be a list")
+        return chatmod.turn(facts, str(body.get("text", "")), judge, getattr(judge, "client"))
+
+    def story(self) -> dict[str, Any]:
+        from . import chat as chatmod
+
+        return {"story": chatmod.STORY}
+
 
 class Handler(BaseHTTPRequestHandler):
     session: Session  # set per server via make_server()
@@ -237,13 +251,17 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in url.path.split("/") if p]
         s = self.session
         if not parts:
-            return self._static("playground.html")  # stateless playground is the landing page
+            return self._static("chat.html")  # the conversation demo is the landing page
+        if parts == ["paste"]:
+            return self._static("playground.html")  # two-box paste mode
         if parts == ["store"] or parts == ["index.html"]:
             return self._static("index.html")  # the dashboard over the on-disk store
         if parts == ["api", "state"]:
             return self._run(s.state)
         if parts == ["api", "presets"]:
             return self._run(s.presets)
+        if parts == ["api", "story"]:
+            return self._run(s.story)
         if parts == ["api", "events"]:
             q = parse_qs(url.query)
             return self._run(s.events, int(q.get("limit", ["50"])[0]))
@@ -268,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._run(s.recall, body)
         if parts == ["api", "check"]:
             return self._run(s.check, body)
+        if parts == ["api", "chat"]:
+            return self._run(s.chat, body)
         if len(parts) == 4 and parts[:2] == ["api", "memories"]:
             mid, action = parts[2], parts[3]
             if action in ACTIONS:
