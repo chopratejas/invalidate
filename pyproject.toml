@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "invalidate"
+version = "0.1.0"
+description = "Semantic TTL for agent memory and RAG caches. Every stored fact gets a typed lease; new evidence is judged against every memory by Jev; code owns the write."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["agent-memory", "rag", "cache-invalidation", "typesafe", "jev", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+  "typesafe-sdk>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.40"]
+
+[project.scripts]
+invalidate = "invalidate.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/tejas/invalidate"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/invalidate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
