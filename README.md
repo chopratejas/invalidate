@@ -12,6 +12,8 @@
 [![license](https://img.shields.io/badge/license-Apache%202.0-lightgrey?style=flat-square)](LICENSE)
 [![built on](https://img.shields.io/badge/built%20on-TypeSafe%20Jev-111?style=flat-square)](https://typesafe.ai)
 
+**Live demo: [invalidate-playground.vercel.app](https://invalidate-playground.vercel.app)**. Talk to it, or paste facts and events at [/paste](https://invalidate-playground.vercel.app/paste).
+
 <img src="docs/img/chat.png" alt="Conversation on the left, stored facts on the right; superseded facts struck out with the event that replaced them" width="860">
 
 </div>
@@ -64,6 +66,10 @@ invalidate uses [Jev](https://typesafe.ai), a model that answers a yes/no questi
 Eval on 157 labeled cases: 89.2% strict, 97.5% lenient, 0 memories wrongly retired. See [evals](evals/README.md).
 
 ## Try it in two minutes
+
+No install: [invalidate-playground.vercel.app](https://invalidate-playground.vercel.app).
+
+Locally:
 
 **1. Install**
 
