@@ -202,6 +202,8 @@ class ValidateReport:
 class Recalled:
     memory: Memory
     relevance: float
+    note: str | None = None
+    """Set by `recall(annotate=True)` on retired memories: "OUTDATED, replaced as of <source>: <event text>"."""
 
 
 @dataclass

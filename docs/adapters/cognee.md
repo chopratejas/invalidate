@@ -36,6 +36,8 @@ print(report.summary())                                       # verdicts in the 
 
 hits = governed_search(cognee, gov, "which database?", query_type=cognee.SearchType.CHUNKS)
 # -> cognee.search(...) scoped to the dataset, minus chunks whose Data row is dead or under review
+hits = governed_search(cognee, gov, "which database?", query_type=cognee.SearchType.CHUNKS, annotate=True)
+# -> keep all; each chunk payload dict gains "invalidate_note" (filter_results(raw, gov, annotate=True) likewise)
 
 # inside async code, search yourself and filter:
 #   raw = await cognee.search("which database?", query_type=cognee.SearchType.CHUNKS, dataset_ids=[adapter.dataset_id])

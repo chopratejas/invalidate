@@ -498,18 +498,24 @@ class Invalidate:
         min_relevance: float | None = None,
         candidates: Iterable[Memory] | None = None,
         validate: bool | None = None,
+        annotate: bool = False,
     ) -> RecallReport:
         """Return live memories relevant to `query`, ranked by Jev's relevance vote. No embeddings.
 
         `candidates` restricts the pool (for example the top-k from your vector store); relevance is still judged.
         `validate=True` (the default in lazy mode) first judges the top candidates against every event they have
         not seen yet, so nothing stale is returned even when observe() only appended to the log.
+        `annotate=True` is the add-only serving mode: superseded and contradicted memories stay in the pool and
+        each `Recalled.note` says what retired them ("OUTDATED, replaced as of <source>: <event text>"), the
+        same label `Governor.annotate` attaches. Live results carry `note=None`.
         """
         ns = namespace or self.namespace
         t0 = time.perf_counter()
         if validate is None:
             validate = self.policy.lazy
         statuses = {Status.ACTIVE, Status.FROZEN} | ({Status.NEEDS_REVIEW} if include_review else set())
+        if annotate:
+            statuses |= {Status.SUPERSEDED, Status.CONTRADICTED}
         t_now = now()
         if candidates is None:
             pool = [m for m in self.store.list_memories(ns, statuses) if not m.is_expired(t_now)]
@@ -547,10 +553,28 @@ class Invalidate:
                 if m is not None and m.status in statuses:
                     kept.append(Recalled(memory=m, relevance=r.relevance))
             scored = kept
+        results = scored[:limit]
+        if annotate:
+            for r in results:
+                r.note = self.note_for(r.memory)
         return RecallReport(
-            query=query, results=scored[:limit], considered=len(pool), requests=requests,
+            query=query, results=results, considered=len(pool), requests=requests,
             input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000, validated=validated,
         )
+
+    def note_for(self, m: Memory) -> str | None:
+        """The serving note for a retired memory, built from the last applied verdict that moved it to its
+        current status: "OUTDATED, replaced as of <event source>: <event text>" (superseded) or
+        "OUTDATED, no longer true as of ...: ..." (contradicted). None for every other status."""
+        if m.status not in (Status.SUPERSEDED, Status.CONTRADICTED):
+            return None
+        word = "replaced" if m.status is Status.SUPERSEDED else "no longer true"
+        last = [v for v in self.history(m.id) if v.applied and v.to_status is m.status]
+        if last:
+            e = self.store.get_event(last[-1].event_id)
+            if e is not None:
+                return f"OUTDATED, {word} as of {e.source}: {e.text}"
+        return f"OUTDATED, {word}"
 
     def list(self, *, statuses: Iterable[Status] | None = None, namespace: str | None = None) -> list[Memory]:
         return self.store.list_memories(namespace or self.namespace, statuses)

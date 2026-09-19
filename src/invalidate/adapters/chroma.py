@@ -194,12 +194,28 @@ def _prune_query_result(result: dict[str, Any], dead: set[str]) -> dict[str, Any
     return out
 
 
-def governed_query(collection: Any, gov: Governor, **query_kwargs: Any) -> dict[str, Any]:
+def _annotate_query_result(result: dict[str, Any], gov: Governor) -> dict[str, Any]:
+    """Add an `invalidate_notes` column (one list per query, aligned with `ids`) to a Chroma QueryResult."""
+    out = dict(result)
+    out["invalidate_notes"] = [
+        None if group is None else [n for _, n in gov.annotate(group, id_of=str)] for group in (result.get("ids") or [])
+    ]
+    return out
+
+
+def governed_query(collection: Any, gov: Governor, *, annotate: bool = False, **query_kwargs: Any) -> dict[str, Any]:
     """`collection.query(...)` with the live filter merged into `where`, then pruned against the ledger.
 
     The `where` clause hides rows the adapter has flagged in the host; the ledger prune also hides rows
     the Governor knows are dead but has not written to the host (mode="ledger", or a push that errored).
+
+    `annotate=True` runs the query without the live filter, keeps every row, and adds an
+    `"invalidate_notes"` column to the QueryResult: one list per query aligned with `ids`, holding
+    `Governor.annotate`'s label for retired rows and None for live ones. A column rather than a key in
+    `metadatas`, which is absent unless `include` asks for it and is None for rows stored without metadata.
     """
+    if annotate:
+        return _annotate_query_result(collection.query(**query_kwargs), gov)
     prefix = getattr(gov.adapter, "prefix", "invalidate_")
     query_kwargs["where"] = merge_where(query_kwargs.get("where"), live_where(prefix))
     result = collection.query(**query_kwargs)

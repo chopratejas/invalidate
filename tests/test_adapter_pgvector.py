@@ -703,3 +703,20 @@ def test_fake_rejects_unknown_sql():
         conn.cursor().execute('TRUNCATE "memories"')
     with pytest.raises(TypeError):
         conn.cursor().execute('DELETE FROM "memories" WHERE "id" = %s', ())
+
+
+def test_governed_rows_annotate_returns_pairs_with_notes(host):
+    adapter = make_adapter(host)
+    gov = Governor(adapter, ":memory:", judge=make_judge(), mode="ledger")
+    gov.sync()
+    gov.observe(EVENT, source="slack")
+    rows = host.select_live(adapter)                                             # ledger mode: SQL hides nothing
+    out = governed_rows(rows, gov, annotate=True)
+    assert [r for r, _ in out] == rows                                           # nothing removed, order kept
+    notes = {str(r[0]): n for r, n in out}
+    assert notes[host.ids["pg"]] == f"OUTDATED, replaced as of slack: {EVENT}"
+    assert notes[host.ids["replica"]] == f"OUTDATED, no longer true as of slack: {EVENT}"
+    assert notes[host.ids["deploy"]] is None and notes[host.ids["alice"]] is None
+    dicts = [{"id": r[0], "text": r[1]} for r in rows]
+    assert {str(d["id"]): n for d, n in governed_rows(dicts, gov, annotate=True)} == notes
+    gov.close()

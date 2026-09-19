@@ -382,3 +382,35 @@ def test_confirm_does_not_touch_host(collection):
     rep = gov.observe("yep, still on Postgres", source="slack")
     assert rep.pushes == [] and "invalidate_status" not in _chroma_meta(collection, "pg")
     assert isinstance(next(iter(ChromaAdapter(collection).pull())), HostMemory)
+
+
+def test_chroma_governed_query_annotate_keeps_dead_with_notes_column(collection):
+    gov = Governor(ChromaAdapter(collection), ":memory:", judge=make_judge())
+    gov.sync()
+    gov.observe("we migrated to SQLite last Tuesday", source="slack")
+    res = governed_query(collection, gov, annotate=True, query_embeddings=[_vec(0)], n_results=4)
+    assert set(res["ids"][0]) == set(FACTS)                       # no live filter: flagged rows come back
+    assert len(res["documents"][0]) == 4 and len(res["invalidate_notes"]) == 1
+    notes = dict(zip(res["ids"][0], res["invalidate_notes"][0]))
+    assert notes["pg"] == "OUTDATED, replaced as of slack: we migrated to SQLite last Tuesday"
+    assert notes["replica"] == "OUTDATED, no longer true as of slack: we migrated to SQLite last Tuesday"
+    assert notes["deploy"] is None and notes["alice"] is None
+    assert "invalidate_notes" not in governed_query(collection, gov, query_embeddings=[_vec(0)], n_results=4)
+
+
+def test_langgraph_filter_items_annotate_labels_value_copies(lg_store):
+    store, ns = lg_store
+    adapter = LangGraphStoreAdapter(store, ns)
+    gov = Governor(adapter, ":memory:", judge=make_judge())
+    gov.sync()
+    gov.observe("we migrated to SQLite last Tuesday", source="slack")
+    items = filter_items(store.search(ns, limit=50), gov, annotate=True)
+    notes = {i.key: i.value.get("invalidate_note") for i in items}
+    assert set(notes) == {"pg", "deploy", "alice", "replica", "no-text", "nested"}
+    assert notes["pg"] == "OUTDATED, replaced as of slack: we migrated to SQLite last Tuesday"
+    assert notes["replica"] == "OUTDATED, no longer true as of slack: we migrated to SQLite last Tuesday"
+    assert notes["deploy"] is None and notes["nested"] is None
+    assert next(i for i in items if i.key == "pg").value["content"] == FACTS["pg"]
+    assert "invalidate_note" not in store.get(ns, "pg").value        # a copy was annotated, not the store
+    assert {i.key for i in adapter.search(gov, annotate=True, limit=50)} == set(notes)   # no live filter either
+    assert "pg" not in {i.key for i in adapter.search(gov, limit=50)}

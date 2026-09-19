@@ -62,6 +62,7 @@ gov.sync()                                                     # every observati
 report = gov.observe("we migrated to SQLite last Tuesday", source="slack")
 print(report.summary())                                        # marks "user prefers Postgres [...]" in the file
 graph = governed_read(None, gov)                               # the graph with dead memories removed
+graph = governed_read(None, gov, annotate=True)                # keep all: observations as (text, note), relations gain "invalidate_note"
 gov.keep("alice#75cc9d30cc"); gov.forget("billing#1a2b3c4d5e") # human overrides, mirrored into the file
 ```
 

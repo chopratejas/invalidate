@@ -35,6 +35,7 @@ report = gov.observe("we migrated to SQLite", source="slack")    # judge, then s
 print(report.summary())
 
 hits = governed_query(client, gov, "memories", embed("which database?"), limit=5)   # QueryResponse minus dead points
+hits = governed_query(client, gov, "memories", embed("which database?"), limit=5, annotate=True)  # keep all; payload["invalidate_note"]
 for p in hits.points:
     print(p.score, p.payload["text"])
 ```

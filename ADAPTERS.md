@@ -50,6 +50,24 @@ and a timestamp. `Reason.as_metadata()` is what metadata-capable hosts get;
   verbatim into the host and link the dead rows to it.
 - `filter(results, id_of=...)`: drop dead and reviewed ids from any host search result
   (reviewed rows are hidden until a human calls `keep()` or `forget()`).
+- `annotate(results, id_of=...)`: keep every result and return `[(result, note), ...]`,
+  where `note` is `"OUTDATED, replaced as of <source>: <event text>"` (superseded) or
+  `"OUTDATED, no longer true as of ...: ..."` (contradicted) and None for live rows.
+
+Two serving modes, then. `filter` is subtractive: a retired fact never reaches the
+prompt, which is right when the consumer cannot render a label (a tool result, a
+list of strings). `annotate` is add-only: nothing is removed, retired facts arrive
+labelled with what retired them, so the model sees the change chain explicitly
+instead of inferring it from dates, and questions about the previous value ("where
+did I keep them before?") stay answerable. On LongMemEval knowledge-update
+questions annotating beat hiding (evals/longmemeval/README.md). Every adapter's
+read-side helper (`governed_search`, `governed_query`, `governed_rows`,
+`governed_facts`, `governed_read`, `filter_items`, `filter_results`) takes
+`annotate=True` and puts the note in the host's own result shape (a dict key, a
+payload key, or `(result, note)` pairs where the result cannot carry one; each helper
+documents which), and `Invalidate.recall(..., annotate=True)` does the same for the
+engine with `Recalled.note`. The default is `filter` everywhere: a caller that does
+not render the note would otherwise serve a stale fact unlabelled.
 - `guard(host.add)`: wrap the host's write path so incoming user text is judged
   against memory before it is stored.
 - `keep(id)` / `forget(id)`: human overrides, mirrored both ways.

@@ -267,17 +267,26 @@ def _scope_given(kw: dict[str, Any]) -> bool:
     return any(k in kw for k in _SCOPE_KEYS)
 
 
-def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
-    """`client.search_long_term_memory(query, **kw)` run synchronously, with dead memories removed (and
-    under-review ones too when include_review=False). Returns the `MemoryRecordResults` the client returned with `memories` filtered and the other fields
-    (`total`, `next_offset`) untouched. When `kw` names no scope filter and the governor's adapter is a
-    RedisMemoryAdapter, its scope filters are applied."""
-    adapter = gov.adapter
-    if not _scope_given(kw) and isinstance(adapter, RedisMemoryAdapter):
-        kw = {**adapter.filters(), **kw}
-    res = _run(client.search_long_term_memory(query, **kw))
-    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "",
-                      include_review=include_review)
+def _with_note(record: Any, note: str | None) -> Any:
+    """`MemoryRecord` is a pydantic model without `extra="allow"`, so `record.invalidate_note = ...` raises;
+    `model_copy(update=...)` adds the attribute to the copy (readable, not part of `model_dump()`)."""
+    copy = getattr(record, "model_copy", None)
+    if callable(copy):
+        return copy(update={"invalidate_note": note})
+    record.invalidate_note = note
+    return record
+
+
+def _serve(res: Any, gov: Governor, *, include_review: bool, annotate: bool) -> Any:
+    memories = list(getattr(res, "memories", None) or [])
+
+    def id_of(m: Any) -> str:
+        return getattr(m, "id", "") or ""
+
+    if annotate:
+        keep = [_with_note(m, n) for m, n in gov.annotate(memories, id_of=id_of)]
+    else:
+        keep = gov.filter(memories, id_of=id_of, include_review=include_review)
     copy = getattr(res, "model_copy", None)
     if callable(copy):
         return copy(update={"memories": keep})
@@ -285,19 +294,33 @@ def governed_search(client: Any, gov: Governor, query: str, *, include_review: b
     return res
 
 
-async def agoverned_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
+def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, annotate: bool = False,
+                    **kw: Any) -> Any:
+    """`client.search_long_term_memory(query, **kw)` run synchronously, with dead memories removed (and
+    under-review ones too when include_review=False). Returns the `MemoryRecordResults` the client returned with `memories` filtered and the other fields
+    (`total`, `next_offset`) untouched. When `kw` names no scope filter and the governor's adapter is a
+    RedisMemoryAdapter, its scope filters are applied.
+
+    `annotate=True` keeps every record and returns each `MemoryRecord` in `.memories` with an `invalidate_note`
+    attribute (`Governor.annotate`'s label, None when live). The record is a pydantic model that rejects
+    unknown attributes, so the note is added through `model_copy(update=...)`: `record.invalidate_note`
+    reads it, `model_dump()` does not include it. Do not combine with `topics={"none": dead_markers()}`,
+    which hides the retired records host-side before they can be labelled."""
+    adapter = gov.adapter
+    if not _scope_given(kw) and isinstance(adapter, RedisMemoryAdapter):
+        kw = {**adapter.filters(), **kw}
+    res = _run(client.search_long_term_memory(query, **kw))
+    return _serve(res, gov, include_review=include_review, annotate=annotate)
+
+
+async def agoverned_search(client: Any, gov: Governor, query: str, *, include_review: bool = True,
+                           annotate: bool = False, **kw: Any) -> Any:
     """Async twin of `governed_search` for code already inside an event loop."""
     adapter = gov.adapter
     if not _scope_given(kw) and isinstance(adapter, RedisMemoryAdapter):
         kw = {**adapter.filters(), **kw}
     res = await client.search_long_term_memory(query, **kw)
-    keep = gov.filter(list(getattr(res, "memories", None) or []), id_of=lambda m: getattr(m, "id", "") or "",
-                      include_review=include_review)
-    copy = getattr(res, "model_copy", None)
-    if callable(copy):
-        return copy(update={"memories": keep})
-    res.memories = keep
-    return res
+    return _serve(res, gov, include_review=include_review, annotate=annotate)
 
 
 __all__ = ["RedisMemoryAdapter", "governed_search", "agoverned_search", "receipt_topics", "dead_markers", "MARKER_PREFIX"]

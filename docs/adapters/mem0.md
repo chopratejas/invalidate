@@ -26,6 +26,7 @@ report = gov.observe("we migrated to SQLite", source="slack") # judge, then flag
 print(report.summary(), adapter.flagged_in_host)
 
 hits = governed_search(memory, gov, "which database?")        # search() minus dead memories
+hits = governed_search(memory, gov, "which database?", annotate=True)  # keep all; each result dict gains "invalidate_note"
 add = guard_add(memory, gov)                                  # judge-before-write add()
 add([{"role": "user", "content": "we're on Postgres 16 now"}], user_id="alice")
 ```

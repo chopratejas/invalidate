@@ -26,6 +26,7 @@ Verified against langgraph 1.x `BaseStore`:
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -40,11 +41,24 @@ def live_filter(prefix: str = "invalidate_") -> dict[str, Any]:
     return {f"{prefix}live": {"$ne": False}}
 
 
-def filter_items(items: Iterable[Any], gov: Governor, *, include_review: bool = True) -> list[Any]:
-    """Drop search results (Item/SearchItem, or anything with `.key`) whose memory is dead in the ledger."""
+def filter_items(items: Iterable[Any], gov: Governor, *, include_review: bool = True, annotate: bool = False) -> list[Any]:
+    """Drop search results (Item/SearchItem, or anything with `.key`) whose memory is dead in the ledger.
+
+    `annotate=True` keeps every item and puts `Governor.annotate`'s label under `item.value["invalidate_note"]`
+    (None when live). `Item` uses `__slots__`, so the note lives in the value dict; each annotated item is a
+    shallow copy with its own value dict, so the store's data is not touched."""
     adapter = gov.adapter
     key_of = getattr(adapter, "host_id_of", None) or (lambda it: it.key)
-    return gov.filter(items, id_of=key_of, include_review=include_review)
+    if not annotate:
+        return gov.filter(items, id_of=key_of, include_review=include_review)
+    out: list[Any] = []
+    for it, note in gov.annotate(items, id_of=key_of):
+        value = getattr(it, "value", None)
+        if isinstance(value, dict):
+            it = copy.copy(it)
+            it.value = {**value, "invalidate_note": note}
+        out.append(it)
+    return out
 
 
 class LangGraphStoreAdapter:
@@ -147,10 +161,12 @@ class LangGraphStoreAdapter:
     def live_filter(self) -> dict[str, Any]:
         return live_filter(self.prefix)
 
-    def search(self, gov: Governor, **kw: Any) -> list[Any]:
-        """`store.search(namespace, **kw)` with the live filter merged in, then pruned against the ledger."""
-        kw["filter"] = {**(kw.get("filter") or {}), **self.live_filter()}
-        return filter_items(self.store.search(self.namespace, **kw), gov)
+    def search(self, gov: Governor, *, annotate: bool = False, **kw: Any) -> list[Any]:
+        """`store.search(namespace, **kw)` with the live filter merged in, then pruned against the ledger.
+        `annotate=True` searches without the live filter and labels instead of pruning (see `filter_items`)."""
+        if not annotate:
+            kw["filter"] = {**(kw.get("filter") or {}), **self.live_filter()}
+        return filter_items(self.store.search(self.namespace, **kw), gov, annotate=annotate)
 
 
 __all__ = ["LangGraphStoreAdapter", "filter_items", "live_filter"]

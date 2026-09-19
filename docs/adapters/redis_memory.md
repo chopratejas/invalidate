@@ -31,6 +31,7 @@ print(report.summary())
 
 hits = governed_search(client, gov, "which database?")         # search minus dead memories (sync)
 hits = governed_search(client, gov, "which database?", topics={"none": dead_markers()})  # also pre-filter host-side
+hits = governed_search(client, gov, "which database?", annotate=True)  # keep all; each record gets .invalidate_note
 ```
 
 The client is async. The adapter (and `governed_search`) run each coroutine with `asyncio.run` when no event

@@ -408,3 +408,24 @@ def test_governor_sees_human_edits_as_new_claims(two_files, fake: FakeJudge):
         assert rep.added == 1 and rep.removed == 0 and rep.unchanged == 3  # dead row vanishing is not "removed"
         assert gov.status_of(old) is Status.SUPERSEDED
         assert gov.status_of(MarkdownAdapter([a, b]).id_for(a, "user prefers SQLite now")) is Status.ACTIVE
+
+
+def test_governor_annotate_labels_markdown_claims_without_touching_files(two_files, fake: FakeJudge):
+    a, b = two_files
+    before = read(a), read(b)
+    fake.script("user prefers Postgres", SUPERSEDE).script("Postgres replica", CONTRADICT)
+    with Governor(MarkdownAdapter([a, b]), ":memory:", judge=fake, mode="ledger") as gov:
+        gov.sync()
+        gov.observe("we migrated to SQLite", source="slack")
+        claims = list(gov.adapter.pull())
+        out = gov.annotate(claims, id_of=lambda hm: hm.id)
+        assert [hm for hm, _ in out] == claims
+        notes = {hm.text: n for hm, n in out}
+        assert notes == {
+            "user prefers Postgres": "OUTDATED, replaced as of slack: we migrated to SQLite",
+            "deploys run at 2pm UTC": None,
+            "Alice owns the billing service": None,
+            "prod reads go through the Postgres replica": "OUTDATED, no longer true as of slack: we migrated to SQLite",
+        }
+        assert [hm.id for hm in gov.filter(claims, id_of=lambda hm: hm.id)] == [hm.id for hm in claims if notes[hm.text] is None]
+    assert (read(a), read(b)) == before

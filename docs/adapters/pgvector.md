@@ -41,6 +41,7 @@ with conn.cursor() as cur:                                    # your own query, 
         ("[0.1,0.2,...]",),
     )
     hits = governed_rows(cur.fetchall(), gov)                 # also prunes what only the ledger knows
+    pairs = governed_rows(cur.fetchall(), gov, annotate=True) # keep all: [(row, note), ...]; query without live_where()
 ```
 
 `gov.keep(id)` writes `invalidate_status="active"` back; `gov.forget(id)` deletes the row.

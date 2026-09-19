@@ -666,3 +666,16 @@ def test_governor_observe_many_eager(fake):
     assert rep.report.judged == 2 and len(rep.report.changed) == 1
     assert host.items["1"]["meta"]["invalidate_status"] == "superseded"
     assert gov.mem.pending() == 0
+
+
+def test_recall_annotate_labels_like_annotate(gov, fake):
+    fake.script("memory:a", SUPERSEDE)
+    fake.default_relevance = 1.0
+    gov.sync()
+    gov.observe("we moved to SQLite", source="slack")
+    assert {gov.host_id(m) for m in gov.recall("database").memories} == {"b", "c"}      # default: filtered
+    rep = gov.recall("database", annotate=True)
+    by_host = {gov.host_id(r.memory): r.note for r in rep.results}
+    assert by_host == {"a": "OUTDATED, replaced as of slack: we moved to SQLite", "b": None, "c": None}
+    annotated = gov.annotate([{"id": k} for k in ITEMS], id_of=lambda r: r["id"])
+    assert {r["id"]: n for r, n in annotated} == by_host

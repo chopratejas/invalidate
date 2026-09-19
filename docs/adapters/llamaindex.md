@@ -23,6 +23,7 @@ gov = Governor(adapter, "ledger.db", mode="flag", successors=True)
 gov.sync()                                                     # block.facts -> ledger (content-addressed ids)
 report = gov.observe("we migrated to SQLite", source="slack")  # judge; stale facts leave block.facts
 print(report.summary(), adapter.hidden)                        # {sha1: "user prefers Postgres"}
+pairs = governed_facts(block, gov, annotate=True)              # keep all: [(fact, note), ...], note None when live
 put = guard_put(memory, gov)                                   # judge-before-write memory.put()
 put(ChatMessage(role="user", content="we're on Postgres 16 now"))
 ```

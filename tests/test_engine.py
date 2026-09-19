@@ -704,6 +704,27 @@ def test_recall_include_review(mem, fake):
     assert report.considered == 2
 
 
+def test_recall_annotate_keeps_dead_memories_and_labels_them(mem, fake):
+    fake.default_relevance = 1.0
+    live = mem.remember("user likes tea")
+    sup = mem.remember("user prefers Postgres")
+    con = mem.remember("prod reads go through the Postgres replica")
+    fake.script(sup.id, SUPERSEDE).script(con.id, CONTRADICT)
+    mem.observe("we migrated to SQLite", source="slack")
+    assert mem.get(sup.id).status is S.SUPERSEDED and mem.get(con.id).status is S.CONTRADICTED
+    assert {m.id for m in mem.recall("q").memories} == {live.id}                   # default: dead excluded
+    assert all(r.note is None for r in mem.recall("q").results)
+
+    rep = mem.recall("q", annotate=True)
+    assert rep.considered == 3
+    assert {r.memory.id: r.note for r in rep.results} == {
+        live.id: None,
+        sup.id: "OUTDATED, replaced as of slack: we migrated to SQLite",
+        con.id: "OUTDATED, no longer true as of slack: we migrated to SQLite",
+    }
+    assert {r.memory.id for r in mem.recall("q", annotate=True, limit=1).results} <= {live.id, sup.id, con.id}
+
+
 def test_recall_report_fields_and_batching(make_mem, fake):
     fake.default_relevance = 0.9
     fake.tokens_per_call = 5

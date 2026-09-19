@@ -24,6 +24,7 @@ gov.sync()                                                   # live RELATES_TO e
 report = gov.observe("Alice migrated to SQLite", source="slack")
 print(report.summary())                                      # stale edges now carry invalid_at/expired_at
 gov.keep("<edge uuid>")                                      # human override: window cleared again
+labelled = gov.annotate(edges, id_of=lambda e: e.uuid)       # serve all: [(edge, "OUTDATED, replaced as of ..." | None)]
 
 # the adapter is sync; it runs graphiti's coroutines for you, inside or outside an event loop
 ```

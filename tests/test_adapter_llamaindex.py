@@ -236,3 +236,19 @@ class TestHelpers:
         assert "postgres" not in _prompt(memory)
         put(ChatMessage(role="assistant", content="ok"))  # assistant turns are not events
         assert len({e.id for e, _ in fake.observe_calls}) == 1
+
+
+def test_governed_facts_annotate_returns_fact_note_pairs(fake):
+    block = _block()
+    fake.script("postgres", SUPERSEDE)
+    gov = _gov(FactBlockAdapter(block), fake, mode="ledger")
+    gov.sync()
+    gov.observe("we migrated to sqlite", source="slack")
+    out = governed_facts(block, gov, annotate=True)
+    assert [f for f, _ in out] == FACTS                                            # nothing removed, order kept
+    assert dict(out) == {
+        "user prefers postgres": "OUTDATED, replaced as of slack: we migrated to sqlite",
+        "user lives in berlin": None,
+        "deploys run at 2pm UTC": None,
+    }
+    assert block.facts == FACTS

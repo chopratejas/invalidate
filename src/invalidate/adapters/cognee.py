@@ -409,27 +409,60 @@ def result_ids(item: Any) -> list[str]:
     return []
 
 
-def _filter_payloads(res: Any, hide: set[str]) -> Any:
-    """Drop payloads whose row is hidden, in every shape `cognee.search` returns. Strings (completions)
-    and payloads without an id pass through untouched."""
+def _map_payloads(res: Any, fn: Callable[[Any], Any]) -> Any:
+    """Apply `fn` to every id-bearing payload in every shape `cognee.search` returns (`fn` returns the
+    replacement, or None to drop it). Strings (completions) and payloads without an id pass through untouched."""
     if isinstance(res, list):
         out = []
         for item in res:
             if isinstance(item, dict) and "search_result" in item and not result_ids(item):
-                out.append({**item, "search_result": _filter_payloads(item["search_result"], hide)})
+                out.append({**item, "search_result": _map_payloads(item["search_result"], fn)})
             elif isinstance(item, list):
-                out.append(_filter_payloads(item, hide))
-            elif any(i in hide for i in result_ids(item)):
-                continue
+                out.append(_map_payloads(item, fn))
+            elif result_ids(item):
+                kept = fn(item)
+                if kept is not None:
+                    out.append(kept)
             else:
                 out.append(item)
         return out
     if isinstance(res, dict) and "search_result" in res:
-        return {**res, "search_result": _filter_payloads(res["search_result"], hide)}
+        return {**res, "search_result": _map_payloads(res["search_result"], fn)}
     return res
 
 
-def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, **kw: Any) -> Any:
+def _filter_payloads(res: Any, hide: set[str]) -> Any:
+    """Drop payloads whose row is hidden, in every shape `cognee.search` returns."""
+    return _map_payloads(res, lambda item: None if any(i in hide for i in result_ids(item)) else item)
+
+
+def _annotate_payloads(res: Any, gov: Governor) -> Any:
+    """Label every payload: dict payloads gain `"invalidate_note"`; objects get the attribute when they
+    accept one. The note comes from `Governor.annotate` over the distinct ids the result set exposes."""
+    ids: list[str] = []
+
+    def collect(item: Any) -> Any:
+        ids.extend(result_ids(item))
+        return item
+
+    _map_payloads(res, collect)
+    notes = dict(gov.annotate(sorted(set(ids)), id_of=str))
+
+    def label(item: Any) -> Any:
+        note = next((notes[i] for i in result_ids(item) if notes.get(i)), None)
+        if isinstance(item, dict):
+            return {**item, "invalidate_note": note}
+        try:
+            item.invalidate_note = note
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return item
+
+    return _map_payloads(res, label)
+
+
+def governed_search(client: Any, gov: Governor, query: str, *, include_review: bool = True, annotate: bool = False,
+                    **kw: Any) -> Any:
     """`cognee.search(query, **kw)` with results of dead (and, by default, under-review) rows removed.
 
     Works on payload-shaped results: `SearchType.CHUNKS` / `CHUNKS_LEXICAL` (filtered by `document_id`)
@@ -438,17 +471,23 @@ def governed_search(client: Any, gov: Governor, query: str, *, include_review: b
     stale chunk by then, so use `Governor(mode="delete")` when those search types must not see dead facts.
     `SUMMARIES` payloads carry no document id and pass through. When `kw` names no dataset and the
     governor's adapter is a CogneeAdapter, the search is scoped to its dataset. Runs the coroutine for you;
-    from async code call `cognee.search` yourself and pass the result to `filter_results`."""
+    from async code call `cognee.search` yourself and pass the result to `filter_results`.
+
+    `annotate=True` keeps every payload and adds an `"invalidate_note"` key to each payload dict
+    (`Governor.annotate`'s label for retired rows, None otherwise); completion strings still pass through."""
     adapter = gov.adapter
     if "datasets" not in kw and "dataset_ids" not in kw and isinstance(adapter, CogneeAdapter):
         kw["dataset_ids"] = [adapter.dataset_id]
         kw.update(adapter._user_kw(client.search))
     res = _call(client.search, query, **kw)
-    return filter_results(res, gov, include_review=include_review)
+    return filter_results(res, gov, include_review=include_review, annotate=annotate)
 
 
-def filter_results(res: Any, gov: Governor, *, include_review: bool = True) -> Any:
-    """The filtering half of `governed_search`, for results you already have (e.g. awaited yourself)."""
+def filter_results(res: Any, gov: Governor, *, include_review: bool = True, annotate: bool = False) -> Any:
+    """The filtering half of `governed_search`, for results you already have (e.g. awaited yourself).
+    `annotate=True` labels instead of filtering, as in `governed_search`."""
+    if annotate:
+        return _annotate_payloads(res, gov)
     hide = set(gov.dead_ids())
     if not include_review:
         hide |= {gov.host_id(m) for m in gov.review()}

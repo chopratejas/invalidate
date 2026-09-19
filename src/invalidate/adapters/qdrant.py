@@ -193,6 +193,7 @@ def governed_query(
     query_vector: Any,
     *,
     query_filter: Any | None = None,
+    annotate: bool = False,
     **query_kwargs: Any,
 ) -> Any:
     """`client.query_points(...)` with the live filter ANDed into `query_filter`, then pruned against the ledger.
@@ -200,11 +201,24 @@ def governed_query(
     Returns the `QueryResponse` with dead points removed from `.points`. The filter hides points the adapter
     has flagged in the host; the ledger prune also hides points the Governor knows are dead but has not
     written to the host (mode="ledger", or a push that errored). `using=`, `limit=`, `with_payload=`, ... pass through.
+
+    `annotate=True` queries without the live filter, keeps every point, and writes `Governor.annotate`'s
+    label into `point.payload["invalidate_note"]` (None when the point is live). `ScoredPoint` is a pydantic
+    model that rejects new attributes, so the payload carries it; with `with_payload=False` a payload
+    `{"invalidate_note": ...}` is created only for retired points.
     """
     prefix = getattr(gov.adapter, "prefix", "invalidate_")
     response = client.query_points(
-        collection, query=query_vector, query_filter=merge_filter(query_filter, live_filter(prefix)), **query_kwargs
+        collection, query=query_vector,
+        query_filter=query_filter if annotate else merge_filter(query_filter, live_filter(prefix)), **query_kwargs,
     )
+    if annotate:
+        for p, note in gov.annotate(response.points, id_of=lambda p: str(p.id)):
+            if isinstance(p.payload, dict):
+                p.payload["invalidate_note"] = note
+            elif note is not None:
+                p.payload = {"invalidate_note": note}
+        return response
     dead = gov.dead_ids()
     if dead:
         response.points = [p for p in response.points if str(p.id) not in dead]

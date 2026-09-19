@@ -207,16 +207,28 @@ def _scope_given(kw: dict[str, Any]) -> bool:
     return "filters" in kw or any(k in kw for k in _SCOPE_KEYS)
 
 
-def governed_search(memory: Any, gov: Governor, query: str, **kw: Any) -> Any:
+def governed_search(memory: Any, gov: Governor, query: str, *, annotate: bool = False, **kw: Any) -> Any:
     """`memory.search(query, **kw)` with dead memories removed. Returns the same shape mem0 returned
     ({"results": [...]} with the other keys preserved, or a bare list). When `kw` names no scope and the
-    governor's adapter is a Mem0Adapter, its scope is applied."""
+    governor's adapter is a Mem0Adapter, its scope is applied.
+
+    `annotate=True` keeps every result and adds a top-level `"invalidate_note"` key to each result dict
+    (`Governor.annotate`'s label, e.g. "OUTDATED, replaced as of slack: we moved to SQLite"; None when the
+    memory is live). Top level rather than `metadata`, which mem0 may return as None."""
     adapter = gov.adapter
     if not _scope_given(kw) and isinstance(adapter, Mem0Adapter):
         res = adapter._scoped(memory.search, query, **kw)
     else:
         res = memory.search(query, **kw)
-    keep = gov.filter(results_of(res), id_of=lambda r: r.get("id", "") if isinstance(r, dict) else "")
+    rows = results_of(res)
+
+    def id_of(r: Any) -> str:
+        return r.get("id", "") if isinstance(r, dict) else ""
+
+    if annotate:
+        keep = [{**r, "invalidate_note": n} if isinstance(r, dict) else r for r, n in gov.annotate(rows, id_of=id_of)]
+    else:
+        keep = gov.filter(rows, id_of=id_of)
     if isinstance(res, dict):
         return {**res, "results": keep}
     return keep

@@ -125,6 +125,7 @@ class Governor:
         gov.sync()                                   # pull host memories into the ledger (idempotent)
         gov.observe("we migrated to SQLite", source="slack")   # judge all, push flags/deletes to the host
         gov.filter(results, id_of=lambda r: r["id"])           # hide dead memories at query time
+        gov.annotate(results, id_of=lambda r: r["id"])         # or keep them, labelled with what retired them
     """
 
     MODES = ("flag", "delete", "ledger")
@@ -367,16 +368,7 @@ class Governor:
         out: list[tuple[Any, str | None]] = []
         for r in results:
             m = self.mem.store.get_memory(self.our_id(str(id_of(r))))
-            note = None
-            if m is not None and m.status in DEAD:
-                last = [v for v in self.mem.history(m.id) if v.applied and v.to_status is m.status]
-                word = "replaced" if m.status is Status.SUPERSEDED else "no longer true"
-                if last:
-                    e = self.mem.store.get_event(last[-1].event_id)
-                    note = f"OUTDATED, {word} as of {e.source}: {e.text}" if e else f"OUTDATED, {word}"
-                else:
-                    note = f"OUTDATED, {word}"
-            out.append((r, note))
+            out.append((r, self.mem.note_for(m) if m is not None else None))
         return out
 
     def guard(self, add: Callable[..., Any], *, text_of: Callable[..., Iterable[str]] | None = None, source: str = "user") -> Callable[..., Any]:

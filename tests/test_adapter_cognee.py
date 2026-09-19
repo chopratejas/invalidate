@@ -603,3 +603,23 @@ class TestGovernorEndToEnd:
         assert not rep2.errors and gov.status_of(rep.successor_host_id) is Status.CONTRADICTED
         hits2 = governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS)[0]["search_result"]
         assert {p["document_id"] for p in hits2} == {p["document_id"] for p in hits} - {str(succ_id)}
+
+
+def test_governed_search_annotate_labels_payload_dicts(cog, fake):
+    dead = cog.seed("Alice prefers Postgres")
+    live = cog.seed("Alice lives in Berlin")
+    fake.script("Postgres", CONTRADICT)
+    gov = _gov(_adapter(cog), fake, mode="ledger")
+    gov.sync()
+    gov.observe("Alice dropped Postgres", source="slack")
+    res = governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS, annotate=True)
+    notes = {p["document_id"]: p["invalidate_note"] for p in res[0]["search_result"]}
+    assert notes == {str(dead.id): "OUTDATED, no longer true as of slack: Alice dropped Postgres", str(live.id): None}
+    assert governed_search(cog, gov, "Alice", annotate=True)[0]["search_result"] == ["completion about Alice"]
+    assert [p["document_id"] for p in governed_search(cog, gov, "Alice", query_type=FakeSearchType.CHUNKS)[0]["search_result"]] == [str(live.id)]
+
+    async def inner():
+        raw = await cog.search("Alice", query_type=FakeSearchType.CHUNKS, dataset_ids=[gov.adapter.dataset_id])
+        return filter_results(raw, gov, annotate=True)
+
+    assert {p["document_id"]: p["invalidate_note"] for p in asyncio.run(inner())[0]["search_result"]} == notes

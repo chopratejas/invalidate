@@ -313,3 +313,20 @@ def test_governor_push_error_keeps_ledger_truth(client, collection):
     assert gov.status_of(IDS["pg"]) is Status.SUPERSEDED
     assert payload_of(client, collection, IDS["replica"])["invalidate_status"] == "contradicted"
     assert IDS["pg"] not in {str(p.id) for p in governed_query(client, gov, collection, _vec(0), limit=10).points}
+
+
+def test_governed_query_annotate_keeps_dead_points_and_labels_payload(client, collection):
+    gov = Governor(QdrantAdapter(client, collection), ":memory:", judge=make_judge(), mode="flag")
+    gov.sync()
+    gov.observe("we migrated to SQLite last Tuesday", source="slack")
+    res = governed_query(client, gov, collection, _vec(0), annotate=True, limit=10)
+    assert isinstance(res, QueryResponse)
+    notes = {str(p.id): (p.payload or {}).get("invalidate_note") for p in res.points}
+    assert {IDS["pg"], IDS["replica"], IDS["deploy"], IDS["alice"], str(INT_ID)} <= set(notes)   # no live filter
+    assert notes[IDS["pg"]] == "OUTDATED, replaced as of slack: we migrated to SQLite last Tuesday"
+    assert notes[IDS["replica"]] == "OUTDATED, no longer true as of slack: we migrated to SQLite last Tuesday"
+    assert notes[IDS["deploy"]] is None and notes[str(INT_ID)] is None
+    assert "invalidate_note" not in payload_of(client, collection, IDS["pg"])          # host untouched
+    bare = governed_query(client, gov, collection, _vec(0), annotate=True, limit=10, with_payload=False)
+    by_id = {str(p.id): p.payload for p in bare.points}
+    assert by_id[IDS["pg"]] == {"invalidate_note": notes[IDS["pg"]]} and by_id[IDS["deploy"]] is None

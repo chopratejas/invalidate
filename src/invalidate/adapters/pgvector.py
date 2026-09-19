@@ -274,14 +274,20 @@ def _default_id(row: Any) -> Any:
 
 
 def governed_rows(rows: Iterable[Any], gov: Governor, *, id_of: Callable[[Any], Any] | None = None,
-                  include_review: bool = True) -> list[Any]:
+                  include_review: bool = True, annotate: bool = False) -> list[Any]:
     """Drop rows the ledger knows are dead (or under review) from a result set you fetched yourself.
 
     `id_of` extracts the host id; the default takes column 0 of a tuple, `row["id"]` of a dict, or
     `row.id`. Combine with `live_where()` in the query: the SQL hides what the adapter flagged in the
     host, the ledger prune hides what the Governor knows but did not write (mode="ledger", push errors).
+
+    `annotate=True` keeps every row and returns `[(row, note), ...]` instead, `note` being
+    `Governor.annotate`'s label for retired rows and None otherwise. Pairs because cursor rows are usually
+    tuples, which cannot carry a key; query without `live_where()` so the retired rows are fetched at all.
     """
     pick = id_of or _default_id
+    if annotate:
+        return gov.annotate(rows, id_of=lambda r: str(pick(r)))
     return gov.filter(rows, id_of=lambda r: str(pick(r)), include_review=include_review)
 
 

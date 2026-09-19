@@ -304,6 +304,26 @@ def test_governed_read_hides_dead_and_review(path, fake: FakeJudge):
         assert "type" in g["entities"][0] and g["entities"][0]["name"] == "alice"
 
 
+def test_governed_read_annotate_keeps_dead_and_labels(path, fake: FakeJudge):
+    fake.script("user prefers Postgres", SUPERSEDE).script("alice owns billing", CONTRADICT)
+    with Governor(McpMemoryAdapter(path), ":memory:", judge=fake, mode="ledger") as gov:
+        gov.sync()
+        gov.observe("we migrated to SQLite", source="slack")
+        g = governed_read(None, gov, annotate=True)
+        assert dict(g["entities"][0]["observations"]) == {
+            "user prefers Postgres": "OUTDATED, replaced as of slack: we migrated to SQLite",
+            "deploys run at 2pm UTC": None,
+        }
+        assert dict(g["entities"][1]["observations"]) == {
+            "Alice owns the billing service": None,
+            "user prefers Postgres": "OUTDATED, replaced as of slack: we migrated to SQLite",
+        }
+        assert len(g["relations"]) == 1 and g["relations"][0]["relationType"] == "owns"
+        assert g["relations"][0]["invalidate_note"] == "OUTDATED, no longer true as of slack: we migrated to SQLite"
+        assert "invalidate_note" not in load_like_server(path)[1][0]             # file untouched
+        assert governed_read(path, gov)["relations"] == []                        # default still filters
+
+
 # -- Governor end-to-end --------------------------------------------------------------------
 def test_governor_flag_mode_end_to_end(path, fake: FakeJudge):
     ad = McpMemoryAdapter(path)

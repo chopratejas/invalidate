@@ -319,20 +319,32 @@ class McpMemoryAdapter:
         return hid
 
 
-def governed_read(path: str | os.PathLike[str] | None, gov: Governor, *, include_review: bool = False) -> dict[str, list[dict[str, Any]]]:
+def governed_read(path: str | os.PathLike[str] | None, gov: Governor, *, include_review: bool = False,
+                  annotate: bool = False) -> dict[str, list[dict[str, Any]]]:
     """The graph at `path` (default: the governor's adapter file) with dead observations and relations removed:
     {"entities": [{"type","name","entityType","observations"}], "relations": [...]}, strings as stored.
-    Memories under review are hidden unless `include_review=True`, mirroring `Governor.filter`."""
+    Memories under review are hidden unless `include_review=True`, mirroring `Governor.filter`.
+
+    `annotate=True` removes nothing: observations are plain strings, so each entity's `observations` becomes
+    `[(observation, note), ...]`; relations are dicts and gain an `"invalidate_note"` key. The note is
+    `Governor.annotate`'s label for retired memories and None otherwise."""
     adapter = gov.adapter if isinstance(gov.adapter, McpMemoryAdapter) and path is None else McpMemoryAdapter(path)
     g = adapter.graph()
     for ent in g["entities"]:
         obs = [o for o in ent["observations"] if isinstance(o, str)]
-        ent["observations"] = gov.filter(obs, id_of=lambda o, n=ent["name"]: McpMemoryAdapter.id_for(n, split_marker(o)[0]),
-                                         include_review=include_review)
-    g["relations"] = gov.filter(
-        g["relations"], id_of=lambda r: McpMemoryAdapter.relation_id(r["from"], split_marker(r["relationType"])[0], r["to"]),
-        include_review=include_review,
-    )
+
+        def obs_id(o: str, n: str = ent["name"]) -> str:
+            return McpMemoryAdapter.id_for(n, split_marker(o)[0])
+
+        ent["observations"] = gov.annotate(obs, id_of=obs_id) if annotate else gov.filter(obs, id_of=obs_id, include_review=include_review)
+
+    def rel_id(r: dict[str, Any]) -> str:
+        return McpMemoryAdapter.relation_id(r["from"], split_marker(r["relationType"])[0], r["to"])
+
+    if annotate:
+        g["relations"] = [{**r, "invalidate_note": n} for r, n in gov.annotate(g["relations"], id_of=rel_id)]
+    else:
+        g["relations"] = gov.filter(g["relations"], id_of=rel_id, include_review=include_review)
     return g
 
 

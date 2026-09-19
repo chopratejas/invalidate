@@ -68,7 +68,12 @@ class FakeMemoryRecord:
         return {k: v for k, v in d.items() if not (exclude_none and v is None)}
 
     def model_copy(self, update: Optional[dict[str, Any]] = None) -> "FakeMemoryRecord":
-        return replace(self, **(update or {}))
+        update = dict(update or {})
+        extra = {k: update.pop(k) for k in list(update) if k not in self.__dataclass_fields__}
+        new = replace(self, **update)
+        for k, v in extra.items():        # pydantic's model_copy adds unknown keys to the copy's __dict__ too
+            setattr(new, k, v)
+        return new
 
 
 @dataclass
@@ -512,3 +517,24 @@ class TestGovernedSearch:
         assert c.rows[mid].topics == [f"{MARKER_PREFIX}needs_review"] + [t for t in c.rows[mid].topics if ":" in t[len(MARKER_PREFIX):]]
         gov.keep(mid)
         assert [m.id for m in governed_search(c, gov, "postgres").memories] == [mid]
+
+
+def test_governed_search_annotate_keeps_dead_records_with_notes(fake):
+    c = FakeMemoryAPIClient()
+    dead = c.seed("user prefers postgres")
+    live = c.seed("postgres tips from the wiki")
+    fake.script("prefers postgres", SUPERSEDE)
+    gov = _gov(_adapter(c), fake)
+    gov.sync()
+    gov.observe("we migrated to sqlite", source="slack")
+    res = governed_search(c, gov, "postgres", annotate=True)
+    assert isinstance(res, FakeMemoryRecordResults) and res.total == 2               # host fields untouched
+    notes = {m.id: m.invalidate_note for m in res.memories}
+    assert notes == {dead: "OUTDATED, replaced as of slack: we migrated to sqlite", live: None}
+    assert not hasattr(c.rows[dead], "invalidate_note")                               # copies, not host records
+    assert [m.id for m in governed_search(c, gov, "postgres").memories] == [live]     # default still filters
+
+    async def go():
+        return await agoverned_search(c, gov, "postgres", annotate=True)
+
+    assert {m.id: m.invalidate_note for m in asyncio.run(go()).memories} == notes

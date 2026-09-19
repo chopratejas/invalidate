@@ -898,3 +898,20 @@ class TestGraphiti:
                 _run(boom())
 
         asyncio.run(outer())
+
+
+def test_mem0_governed_search_annotate_keeps_dead_and_adds_note_key(fake):
+    m = FakeMem0OSS()
+    dead = m.seed("user prefers postgres")
+    live = m.seed("postgres tips from the wiki")
+    fake.script("prefers postgres", SUPERSEDE)
+    gov = _gov(Mem0Adapter(m, user_id="u1"), fake)
+    gov.sync()
+    gov.observe("we migrated to sqlite", source="slack")
+    res = governed_search(m, gov, "postgres", annotate=True)
+    assert isinstance(res, dict) and {r["id"] for r in res["results"]} == {dead, live}
+    notes = {r["id"]: r["invalidate_note"] for r in res["results"]}
+    assert notes[dead] == "OUTDATED, replaced as of slack: we migrated to sqlite" and notes[live] is None
+    assert all("memory" in r and "score" in r for r in res["results"])            # host keys preserved
+    assert "invalidate_note" not in m.rows[dead]                                    # host row untouched
+    assert [r["id"] for r in governed_search(m, gov, "postgres")["results"]] == [live]   # default still filters

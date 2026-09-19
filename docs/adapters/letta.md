@@ -23,6 +23,7 @@ gov = Governor(LettaAdapter(client, agent_id), "ledger.db", mode="flag", success
 gov.sync()                                                # every archival passage into the ledger
 gov.observe("we migrated to SQLite", source="slack")      # stale passages get a sidecar note
 gov.keep("passage-...")                                   # human override: note removed
+labelled = gov.annotate(passages, id_of=lambda p: p.id)   # serve all: [(passage, "OUTDATED, replaced as of ..." | None)]
 
 human = Governor(LettaBlockAdapter(client, agent_id, "human"), "ledger.db", mode="flag")
 human.sync(); human.observe("Alice moved to Lisbon", source="crm")
