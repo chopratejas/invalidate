@@ -219,6 +219,29 @@ One memory checked against one event: $0.00006. With more than 200 memories a ch
 
 In practice the LLM columns are never paid. The check is skipped instead, and the cost shows up later as a customer quoted last quarter's price or an engineer paged for a service they handed off months ago.
 
+## Scaling
+
+Per event, cost is linear in the number of memories in scope. With the screening pass on:
+
+| memories in scope | one event | 500 events a day |
+|---|---|---|
+| 1,000 | $0.01, about 1 s | $5 a day |
+| 10,000 | $0.10, about 3 s | $50 a day |
+| 100,000 | $1, about 30 s | $500 a day |
+
+Past roughly 10,000 memories per scope, or a few hundred events an hour, exhaustive checking on every event needs help. The Jev rate limit (1,200 requests a minute) is hit before the cost is.
+
+Top-k by similarity is the wrong help. The event that retires "we use Postgres" is "our database of choice changed", and that pair ranks low on similarity. A prefilter is fine as a wide net and wrong as the judge. What matters is the net's recall, because Jev is cheap enough to judge everything the net catches.
+
+What scales, in order of effect:
+
+1. **Scope in code.** Memories belong to a user, a project or a team, and an event checks only its scope. A 100,000-memory pool is usually a few hundred memories per scope.
+2. **A wide net, then Jev.** Pull the top 500 or 1,000 candidates by embedding or keyword, then screen those with Jev. Cost per event is flat at about a cent. The miss rate is measurable: run the eval with the prefilter on and count the bearing pairs it drops.
+3. **Hierarchical screening.** Group memories by kind or topic, ask Jev once per group whether the event bears on it, and expand only the groups that pass.
+4. **Leases.** Memories have a TTL. Expired memories are not checked.
+
+`observe(candidates=...)` accepts any subset, so items 1 and 2 work today. Item 3 and a published recall number for an embedding prefilter are on the roadmap.
+
 ## Who it is for
 
 **Building an agent with memory.** Ten lines in front of Mem0, Chroma, LangGraph or a Markdown file. Stale facts stop reaching the prompt. The log tells you why the agent believed something.
@@ -338,7 +361,7 @@ Not a memory store, a vector database, an agent or an extractor. It does not rew
 
 ## Roadmap
 
-Async client, Postgres ledger, event ingester for Slack, GitHub and Linear webhooks, a second labeled set the defaults were not tuned on, Cognee and Vercel AI SDK adapters.
+Hierarchical screening for large pools, a measured recall number for an embedding prefilter, async client, Postgres ledger, event ingester for Slack, GitHub and Linear webhooks, a second labeled set the defaults were not tuned on, Cognee and Vercel AI SDK adapters.
 
 ---
 
