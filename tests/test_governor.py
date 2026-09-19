@@ -604,3 +604,52 @@ def test_reason_line_and_metadata():
     assert Reason(Status.ACTIVE, "c", "x", "s", "e", 1.0, 1.0).line().startswith("invalidate: restored after")
     md = r.as_metadata(prefix="x_")
     assert md["x_status"] == "superseded" and md["x_still_true"] == 0.12 and md["x_event_id"] == "evt_1"
+
+
+# ---------------------------------------------------------------- lazy mode through the layer
+def test_lazy_governor_filter_validates_before_serving(fake):
+    from conftest import SUPERSEDE
+    from invalidate.adapters import Governor, InMemoryAdapter
+
+    fake.script("Postgres", SUPERSEDE)
+    host = InMemoryAdapter({"1": "we use Postgres", "2": "lunch at noon"})
+    gov = Governor(host, ":memory:", judge=fake, mode="flag", lazy=True)
+    gov.sync()
+    rep = gov.observe("we moved to SQLite", source="slack")
+    assert rep.report.judged == 0 and rep.report.pending == 2 and rep.pushes == []
+    assert host.items["1"]["meta"] == {}  # nothing pushed yet
+    served = gov.filter([{"id": "1"}, {"id": "2"}], id_of=lambda r: r["id"])
+    assert served == [{"id": "2"}]
+    assert host.items["1"]["meta"]["invalidate_status"] == "superseded"  # pushed during filter()
+    assert gov.mem.pending() == 0
+
+
+def test_lazy_governor_validate_budget_and_successor(fake):
+    from conftest import SUPERSEDE
+    from invalidate.adapters import Governor, InMemoryAdapter
+
+    fake.script("Postgres", SUPERSEDE)
+    host = InMemoryAdapter({"1": "we use Postgres"})
+    gov = Governor(host, ":memory:", judge=fake, mode="flag", successors=True, lazy=True)
+    gov.sync()
+    gov.observe("we moved to SQLite", source="slack")
+    rep = gov.validate()
+    assert rep.memories == 1 and len(rep.changed) == 1
+    inserted = [p for p in gov._pushes if p.action == "insert"]
+    assert len(inserted) == 1 and host.items[inserted[0].host_id]["text"] == "we moved to SQLite"
+    assert gov.status_of("1") is Status.SUPERSEDED
+    assert gov.mem.get(gov.our_id("1")).superseded_by == gov.our_id(inserted[0].host_id)
+
+
+def test_governor_observe_many_eager(fake):
+    from conftest import SUPERSEDE
+    from invalidate.adapters import Governor, InMemoryAdapter
+
+    fake.script("Postgres", SUPERSEDE)
+    host = InMemoryAdapter({"1": "we use Postgres", "2": "lunch at noon"})
+    gov = Governor(host, ":memory:", judge=fake, mode="flag")
+    gov.sync()
+    rep = gov.observe_many(["we moved to SQLite", "lunch is still at noon"], source="slack")
+    assert rep.report.judged == 2 and len(rep.report.changed) == 1
+    assert host.items["1"]["meta"]["invalidate_status"] == "superseded"
+    assert gov.mem.pending() == 0

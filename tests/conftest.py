@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from invalidate import Invalidate, Policy, Votes
-from invalidate.judge import JudgeResult, ObserveBatch, RecallBatch
+from invalidate.judge import JudgeResult, ObserveBatch, PairBatch, RecallBatch
 from invalidate.types import Event, Memory
 
 UNRELATED = Votes(bears=0.0, still_true=1.0, replaces=0.0, hypothetical=0.0)
@@ -36,6 +36,7 @@ class FakeJudge:
     model: str | None = "fake-jev"
     observe_calls: list[tuple[Event, list[Memory]]] = field(default_factory=list)
     recall_calls: list[tuple[str, list[Memory]]] = field(default_factory=list)
+    pair_calls: list[tuple[list[Event], list[Memory], list[tuple[int, int]]]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def script(self, key: str, votes: Votes) -> "FakeJudge":
@@ -58,6 +59,13 @@ class FakeJudge:
         votes = [self._lookup(self.votes, m, self.default_votes) for m in memories]
         return ObserveBatch(votes, JudgeResult(self.tokens_per_call, self.model))
 
+    def screen_pairs(self, events: list[Event], memories: list[Memory], pairs: list[tuple[int, int]]) -> PairBatch:
+        """Bears vote of the scripted Votes for each pair (event-independent, like the scripted observe())."""
+        with self._lock:
+            self.pair_calls.append((list(events), list(memories), list(pairs)))
+        scores = {(j, i): self._lookup(self.votes, memories[i], self.default_votes).bears for j, i in pairs}
+        return PairBatch(scores, JudgeResult(self.tokens_per_call, self.model))
+
     def recall(self, query: str, memories: list[Memory]) -> RecallBatch:
         with self._lock:
             self.recall_calls.append((query, list(memories)))
@@ -72,6 +80,12 @@ class FakeJudge:
         return [[m.id for m in ms] for _, ms in self.observe_calls]
 
 
+class NoPairScreenJudge(FakeJudge):
+    """A judge without the optional pair screen: validate() sends every pair to the full judgment."""
+
+    screen_pairs = None  # type: ignore[assignment]
+
+
 @pytest.fixture
 def fake() -> FakeJudge:
     return FakeJudge()
@@ -79,7 +93,8 @@ def fake() -> FakeJudge:
 
 @pytest.fixture
 def mem(fake: FakeJudge) -> Invalidate:
-    inv = Invalidate(":memory:", judge=fake)
+    # second_opinion off: these tests count judge calls exactly. tests/test_second_opinion.py covers the pass.
+    inv = Invalidate(":memory:", judge=fake, policy=Policy(second_opinion=False))
     yield inv
     inv.close()
 
@@ -90,6 +105,8 @@ def make_mem(fake: FakeJudge):
     created: list[Invalidate] = []
 
     def _make(policy: Policy | None = None, **kw) -> Invalidate:
+        if policy is None:
+            policy = Policy(second_opinion=False)
         inv = Invalidate(":memory:", judge=fake, policy=policy, **kw)
         created.append(inv)
         return inv

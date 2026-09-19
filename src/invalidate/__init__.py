@@ -20,6 +20,7 @@ from .types import (
     ObserveReport,
     Recalled,
     RecallReport,
+    ValidateReport,
     Status,
     Verdict,
     Votes,
@@ -28,6 +29,6 @@ from .types import (
 __version__ = "0.1.0"
 __all__ = [
     "Invalidate", "Policy", "Status", "Disposition", "Memory", "Event", "Verdict", "Votes",
-    "ObserveReport", "RecallReport", "Recalled", "Store", "SQLiteStore", "Judge", "JevJudge",
+    "ObserveReport", "RecallReport", "ValidateReport", "Recalled", "Store", "SQLiteStore", "Judge", "JevJudge",
     "MissingAPIKey", "JudgeMisaligned", "load_dotenv", "__version__",
 ]

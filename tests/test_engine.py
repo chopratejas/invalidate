@@ -1137,7 +1137,7 @@ def test_observe_screens_large_pools_when_judge_supports_it(fake, make_mem):
         def recall(self, q, memories):
             return fake.recall(q, memories)
 
-    mem = make_mem(Policy(screen_above=10, screen_batch_size=8, batch_size=3))
+    mem = make_mem(Policy(screen_above=10, screen_batch_size=8, batch_size=3, second_opinion=False))
     mem._judge = Screening()
     ids = [mem.remember(f"fact {i} about Postgres" if i % 4 == 0 else f"fact {i} about lunch").id for i in range(20)]
     for i in ids:

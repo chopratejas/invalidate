@@ -19,6 +19,7 @@ from .types import (
     Recalled,
     RecallReport,
     Status,
+    ValidateReport,
     Verdict,
     now,
 )
@@ -28,6 +29,7 @@ Transition = Callable[[Memory, Verdict], None]
 _CONTENT_VERDICTS = frozenset(
     {Disposition.CONFIRMED, Disposition.CONTRADICTED, Disposition.SUPERSEDED, Disposition.UNCERTAIN, Disposition.PARTIAL}
 )
+_DEAD = frozenset({Status.CONTRADICTED, Status.SUPERSEDED})
 
 
 class Invalidate:
@@ -49,9 +51,12 @@ class Invalidate:
         api_key: str | None = None,
         model: str | None = None,
         on_transition: Transition | None = None,
+        lazy: bool | None = None,
     ) -> None:
         self.store: Store = SQLiteStore(db) if isinstance(db, str) else db
         self.policy = policy or Policy()
+        if lazy is not None:
+            self.policy.lazy = lazy
         self.namespace = namespace
         self._judge = judge
         self._api_key = api_key
@@ -102,6 +107,9 @@ class Invalidate:
         )
         if id:
             m.id = id
+        # Born current: a fact stored now postdates every event already in the log, so those events are not
+        # evidence against it. Only events that arrive after it are pending for it.
+        m.checked_seq = self.store.max_seq(m.namespace)
         self.store.add_memory(m)
         return m
 
@@ -116,6 +124,7 @@ class Invalidate:
         dry_run: bool = False,
         remember_successor: bool = False,
         successor_kind: str | None = None,
+        defer: bool | None = None,
     ) -> ObserveReport:
         """Judge new evidence against every judgeable memory and apply the policy.
 
@@ -125,6 +134,9 @@ class Invalidate:
         `remember_successor=True` stores the event text verbatim as a new memory when it supersedes
         at least one existing memory, and links each superseded row to it (`superseded_by`).
         The successor takes the kind of the first superseded memory unless `successor_kind` is given.
+        `defer=True` (the default when `policy.lazy`) appends the event to the log and judges nothing now;
+        memories are judged against it when next read (`recall(validate=True)`, `Governor.filter`) or by
+        `validate()`. The report then has `judged == 0` and `pending` set.
         """
         text = text.strip()
         if not text:
@@ -132,6 +144,18 @@ class Invalidate:
         ns = namespace or self.namespace
         event = Event(text=text, source=source, namespace=ns, metadata=metadata or {})
         t0 = time.perf_counter()
+        if defer is None:
+            defer = self.policy.lazy
+        if defer and not dry_run:
+            if remember_successor:
+                event.metadata["_remember_successor"] = True
+                if successor_kind:
+                    event.metadata["_successor_kind"] = successor_kind
+            self.store.add_event(event)
+            pending = self.store.count_pending(ns, self.policy.judge_statuses)
+            return ObserveReport(event=event, verdicts=[], judged=0, skipped=0, requests=0, input_tokens=0,
+                                 latency_ms=(time.perf_counter() - t0) * 1000, pending=pending)
+        prev_seq = self.store.max_seq(ns)
 
         if candidates is None:
             pool = self.store.list_memories(ns)
@@ -151,6 +175,7 @@ class Invalidate:
             else:
                 skipped += 1
 
+        all_judgeable = list(judgeable)
         tokens = 0
         model = None
         screened_out = 0
@@ -193,30 +218,258 @@ class Invalidate:
                 verdicts.append(v)
                 pairs.append((m, v))
 
+        n_second = 0
+        if self.policy.second_opinion:
+            kill_idx = [k for k, (m, v) in enumerate(pairs) if v.applied and v.to_status in _DEAD]
+            second, n_second, t2 = self._second_opinions([(event, pairs[k][0]) for k in kill_idx])
+            tokens += t2
+            for k, v2 in zip(kill_idx, second):
+                m, v = pairs[k]
+                if not self._agrees(v2, m.status, event.source):
+                    to = self.policy.transition(m.status, Disposition.UNCERTAIN, source=event.source)
+                    v = Verdict(event_id=event.id, memory_id=m.id, votes=v2, disposition=Disposition.UNCERTAIN,
+                                from_status=m.status, to_status=to, applied=(to != m.status))
+                    pairs[k] = (m, v)
+                    verdicts[k] = v
+
         successor: Memory | None = None
         if not dry_run:
             # Audit trail first: if a callback or the process dies mid-apply, the event and votes survive.
             self.store.add_event(event)
             self.store.add_verdicts(verdicts)
+            # A memory that was current before this event is current after it. One that was already behind
+            # the log stays behind (validate() will judge the events it missed, and this one, in order).
+            current = {m.id for m in all_judgeable if m.checked_seq >= prev_seq}
             for m, v in pairs:
+                if m.id in current:
+                    m.checked_seq = event.seq
                 self._apply(m, v)
+            self.store.set_checked_seq([mid for mid in current if mid not in {m.id for m, _ in pairs}], event.seq)
             superseded = [v for v in verdicts if v.applied and v.to_status is Status.SUPERSEDED]
             if remember_successor and superseded:
-                first = self.get(superseded[0].memory_id)
-                successor = self.remember(
-                    event.text, source=event.source, kind=successor_kind or first.kind, namespace=ns,
-                    metadata={"supersedes": [v.memory_id for v in superseded], "event_id": event.id},
-                )
-                for v in superseded:
-                    m = self.get(v.memory_id)
-                    m.superseded_by = successor.id
-                    self.store.update_memory(m)
+                successor = self._successor_for(event, superseded, successor_kind)
 
         return ObserveReport(
             successor=successor,
             event=event, verdicts=verdicts, judged=len(judgeable), skipped=skipped, screened_out=screened_out,
-            requests=len(batches) + n_screen_requests, input_tokens=tokens,
+            requests=len(batches) + n_screen_requests + n_second, input_tokens=tokens,
             latency_ms=(time.perf_counter() - t0) * 1000, model=model,
+        )
+
+    def _second_opinions(self, kills: list[tuple[Event, Memory]]) -> tuple[list[Any], int, int]:
+        """Re-judge each (event, memory) with the memory alone in the state. Returns (votes, requests, tokens)."""
+        if not kills:
+            return [], 0, 0
+        results = run_batches(lambda em: self.judge.observe(em[0], [em[1]]), kills, self.policy.max_workers)
+        votes = []
+        tokens = 0
+        for (e, m), res in zip(kills, results):
+            if len(res.votes) != 1:
+                raise JudgeMisaligned(f"second opinion returned {len(res.votes)} votes for 1 memory")
+            votes.append(res.votes[0])
+            tokens += res.usage.input_tokens
+        return votes, len(kills), tokens
+
+    def _agrees(self, votes: Any, status: Status, source: str) -> bool:
+        d = self.policy.dispose(votes)
+        return self.policy.transition(status, d, source=source) in _DEAD
+
+    def _successor_for(self, event: Event, superseded: list[Verdict], successor_kind: str | None) -> Memory:
+        """Store the event verbatim as the successor of every memory it superseded (once per event)."""
+        ns = event.namespace
+        existing = [m for m in self.store.list_memories(ns) if m.metadata.get("event_id") == event.id and "supersedes" in m.metadata]
+        if existing:
+            successor = existing[0]
+            successor.metadata["supersedes"] = sorted(set(successor.metadata["supersedes"]) | {v.memory_id for v in superseded})
+            self.store.update_memory(successor)
+        else:
+            first = self.get(superseded[0].memory_id)
+            successor = self.remember(
+                event.text, source=event.source, kind=successor_kind or first.kind, namespace=ns,
+                metadata={"supersedes": [v.memory_id for v in superseded], "event_id": event.id},
+            )
+            # The successor is born current: it postdates every event in the log so far.
+            successor.checked_seq = self.store.max_seq(ns)
+            self.store.update_memory(successor)
+        for v in superseded:
+            m = self.get(v.memory_id)
+            m.superseded_by = successor.id
+            self.store.update_memory(m)
+        return successor
+
+    def observe_many(
+        self, texts: Iterable[str], *, source: str = "unknown", namespace: str | None = None,
+        remember_successor: bool = False, successor_kind: str | None = None,
+    ) -> tuple[list[Event], ValidateReport | None]:
+        """Batch ingest. Appends every event to the log, then (unless lazy) judges the whole pool against all of
+        them in one pass using the pair screen (many events x many memories per request), which costs about half
+        the tokens of one observe() per event. Returns the events and the validation report."""
+        ns = namespace or self.namespace
+        events = [
+            self.observe(t, source=source, namespace=ns, defer=True, remember_successor=remember_successor,
+                         successor_kind=successor_kind).event
+            for t in texts if t and t.strip()
+        ]
+        if self.policy.lazy or not events:
+            return events, None
+        return events, self.validate(namespace=ns)
+
+    def pending(self, namespace: str | None = None) -> int:
+        """How many judgeable memories are behind the event log (have events they have not been judged against)."""
+        return self.store.count_pending(namespace or self.namespace, self.policy.judge_statuses)
+
+    def validate(
+        self,
+        memories: Iterable[Memory] | None = None,
+        *,
+        namespace: str | None = None,
+        budget_requests: int | None = None,
+    ) -> ValidateReport:
+        """Judge memories against every event they have not seen yet, oldest first, and apply the policy.
+
+        This is the read-side and background half of lazy mode, and the engine behind observe_many().
+        Stage 1 screens (event, memory) pairs many-to-many per request (`policy.pair_events` x
+        `policy.pair_memories`, one short question per pair). Stage 2 runs the full six-question judgment only
+        on pairs that pass `policy.pair_min`. Verdicts for one memory are applied in event order, so a fact
+        superseded in March and re-confirmed in June ends up where June left it.
+
+        `memories=None` means every judgeable memory in the namespace that is behind the log.
+        `budget_requests` caps Jev requests for this call; memories not reached stay pending (`report.pending`).
+        """
+        ns = namespace or self.namespace
+        t0 = time.perf_counter()
+        max_seq = self.store.max_seq(ns)
+        t_now = now()
+        if memories is None:
+            pool = self.store.list_memories(ns, self.policy.judge_statuses)
+        else:
+            pool = []
+            for c in memories:
+                fresh = self.store.get_memory(c.id)
+                if fresh is not None and fresh.namespace == ns and fresh.status in self.policy.judge_statuses:
+                    pool.append(fresh)
+        behind = [m for m in pool if m.checked_seq < max_seq and (m.status is Status.FROZEN or not m.is_expired(t_now))]
+        behind.sort(key=lambda m: m.checked_seq)  # the most stale first: they are the ones a budget should reach
+        if not behind:
+            return ValidateReport(0, 0, 0, 0, [], 0, 0, (time.perf_counter() - t0) * 1000)
+
+        screen_pairs = getattr(self.judge, "screen_pairs", None)
+        requests = 0
+        tokens = 0
+        model = None
+        # ---- stage 1: pair screen. Jobs are (events chunk, memories chunk, pairs) ------------------------------
+        jobs: list[tuple[list[Event], list[Memory], list[tuple[int, int]]]] = []
+        reached: list[Memory] = []
+        event_cache: dict[int, list[Event]] = {}
+        seen_events: dict[str, Event] = {}
+        for mchunk in _chunk(behind, self.policy.pair_memories):
+            lo = min(m.checked_seq for m in mchunk)
+            if lo not in event_cache:
+                event_cache[lo] = self.store.list_events_after(ns, lo)
+            evs = event_cache[lo]
+            chunk_jobs = []
+            for echunk in _chunk_any(evs, self.policy.pair_events):
+                pairs = [(j, i) for j, e in enumerate(echunk) for i, m in enumerate(mchunk) if e.seq > m.checked_seq]
+                if pairs:
+                    chunk_jobs.append((echunk, mchunk, pairs))
+            if budget_requests is not None and requests + len(chunk_jobs) > budget_requests:
+                break
+            requests += len(chunk_jobs)
+            jobs.extend(chunk_jobs)
+            reached.extend(mchunk)
+            for e in evs:
+                seen_events[e.id] = e
+        pending_after = len(behind) - len(reached)
+
+        bearing: dict[str, dict[str, Memory]] = {}  # event id -> memory id -> memory
+        npairs = 0
+        if screen_pairs is None:
+            # Judge without a pair screen (small pools, or a judge that lacks it): every pair goes to stage 2.
+            for echunk, mchunk, pairs in jobs:
+                npairs += len(pairs)
+                for j, i in pairs:
+                    bearing.setdefault(echunk[j].id, {})[mchunk[i].id] = mchunk[i]
+        else:
+            results = run_batches(lambda job: screen_pairs(job[0], job[1], job[2]), jobs, self.policy.max_workers)
+            for (echunk, mchunk, pairs), res in zip(jobs, results):
+                if len(res.scores) != len(pairs):
+                    raise JudgeMisaligned(f"pair screen returned {len(res.scores)} scores for {len(pairs)} pairs")
+                npairs += len(pairs)
+                tokens += res.usage.input_tokens
+                model = res.usage.model or model
+                for j, i in pairs:
+                    if res.scores[(j, i)] >= self.policy.pair_min:
+                        bearing.setdefault(echunk[j].id, {})[mchunk[i].id] = mchunk[i]
+
+        # ---- stage 2: full judgment for bearing pairs, grouped by event ----------------------------------------
+        full_jobs: list[tuple[Event, list[Memory]]] = []
+        for eid, mems in bearing.items():
+            for b in _chunk(list(mems.values()), self.policy.batch_size):
+                full_jobs.append((seen_events[eid], b))
+        full_results = run_batches(lambda job: self.judge.observe(job[0], job[1]), full_jobs, self.policy.max_workers)
+        raw: dict[str, list[tuple[Event, Any]]] = {}  # memory id -> [(event, votes)]
+        for (e, b), res in zip(full_jobs, full_results):
+            if len(res.votes) != len(b):
+                raise JudgeMisaligned(f"judge returned {len(res.votes)} votes for {len(b)} memories")
+            tokens += res.usage.input_tokens
+            model = res.usage.model or model
+            for m, votes in zip(b, res.votes):
+                raw.setdefault(m.id, []).append((e, votes))
+        requests += len(full_jobs)
+
+        # ---- apply, in event order per memory ----------------------------------------------------------------
+        def chain(m: Memory, overrides: dict[str, Any]) -> list[Verdict]:
+            out: list[Verdict] = []
+            status = m.status
+            for e, votes in sorted(raw.get(m.id, []), key=lambda ev: ev[0].seq):
+                if e.id in overrides:
+                    votes, d = overrides[e.id], Disposition.UNCERTAIN
+                else:
+                    d = self.policy.dispose(votes)
+                to = self.policy.transition(status, d, source=e.source)
+                out.append(Verdict(event_id=e.id, memory_id=m.id, votes=votes, disposition=d,
+                                   from_status=status, to_status=to, applied=(to != status)))
+                status = to
+            return out
+
+        plan: list[tuple[Memory, list[Verdict]]] = [(m, chain(m, {})) for m in reached]
+        if self.policy.second_opinion:
+            overrides: dict[str, dict[str, Any]] = {}
+            checked: set[tuple[str, str]] = set()
+            # An override can expose a later kill in the same chain (review -> superseded by the next event),
+            # so loop until every kill in the final chain has had its second opinion.
+            while True:
+                kills = [(seen_events[v.event_id], m, v) for m, vs in plan for v in vs
+                         if v.applied and v.to_status in _DEAD and (v.event_id, m.id) not in checked]
+                if not kills:
+                    break
+                second, n2, t2 = self._second_opinions([(e, m) for e, m, _ in kills])
+                requests += n2
+                tokens += t2
+                for (e, m, v), v2 in zip(kills, second):
+                    checked.add((e.id, m.id))
+                    if not self._agrees(v2, v.from_status, e.source):
+                        overrides.setdefault(m.id, {})[e.id] = v2
+                plan = [(m, chain(m, overrides.get(m.id, {}))) for m, _ in plan]
+        verdicts: list[Verdict] = [v for _, vs in plan for v in vs]
+        self.store.add_verdicts(verdicts)
+        by_event_superseded: dict[str, list[Verdict]] = {}
+        for m, vs in plan:
+            for v in vs:
+                self._apply(m, v)
+                if v.applied and v.to_status is Status.SUPERSEDED:
+                    by_event_superseded.setdefault(v.event_id, []).append(v)
+            m.checked_seq = max_seq
+            self.store.update_memory(m)
+        for eid, sup in by_event_superseded.items():
+            e = seen_events[eid]
+            if e.metadata.get("_remember_successor"):
+                self._successor_for(e, sup, e.metadata.get("_successor_kind"))
+
+        return ValidateReport(
+            memories=len(reached), events=len(seen_events), pairs=npairs,
+            bearing=sum(len(v) for v in bearing.values()), verdicts=verdicts, requests=requests,
+            input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000, pending=pending_after, model=model,
         )
 
     def _apply(self, m: Memory, v: Verdict) -> None:
@@ -241,13 +494,29 @@ class Invalidate:
         namespace: str | None = None,
         include_review: bool = False,
         min_relevance: float | None = None,
+        candidates: Iterable[Memory] | None = None,
+        validate: bool | None = None,
     ) -> RecallReport:
-        """Return live memories relevant to `query`, ranked by Jev's relevance vote. No embeddings."""
+        """Return live memories relevant to `query`, ranked by Jev's relevance vote. No embeddings.
+
+        `candidates` restricts the pool (for example the top-k from your vector store); relevance is still judged.
+        `validate=True` (the default in lazy mode) first judges the top candidates against every event they have
+        not seen yet, so nothing stale is returned even when observe() only appended to the log.
+        """
         ns = namespace or self.namespace
         t0 = time.perf_counter()
+        if validate is None:
+            validate = self.policy.lazy
         statuses = {Status.ACTIVE, Status.FROZEN} | ({Status.NEEDS_REVIEW} if include_review else set())
         t_now = now()
-        pool = [m for m in self.store.list_memories(ns, statuses) if not m.is_expired(t_now)]
+        if candidates is None:
+            pool = [m for m in self.store.list_memories(ns, statuses) if not m.is_expired(t_now)]
+        else:
+            pool = []
+            for c in candidates:
+                fresh = self.store.get_memory(c.id)
+                if fresh is not None and fresh.namespace == ns and fresh.status in statuses and not fresh.is_expired(t_now):
+                    pool.append(fresh)
         batches = _chunk(pool, self.policy.batch_size)
         results = run_batches(lambda b: self.judge.recall(query, b), batches, self.policy.max_workers)
         threshold = self.policy.relevance_min if min_relevance is None else min_relevance
@@ -261,9 +530,24 @@ class Invalidate:
                 if r >= threshold:
                     scored.append(Recalled(memory=m, relevance=r))
         scored.sort(key=lambda r: r.relevance, reverse=True)
+        validated: ValidateReport | None = None
+        requests = len(batches)
+        if validate and scored:
+            # Check a little more than `limit` so a candidate that dies can be replaced from the next ranks.
+            head = scored[: max(limit * 2, limit + 5)]
+            validated = self.validate([r.memory for r in head], namespace=ns)
+            requests += validated.requests
+            tokens += validated.input_tokens
+            fresh = {m.id: m for m in (self.store.get_memory(r.memory.id) for r in head) if m is not None}
+            kept: list[Recalled] = []
+            for r in head:
+                m = fresh.get(r.memory.id)
+                if m is not None and m.status in statuses:
+                    kept.append(Recalled(memory=m, relevance=r.relevance))
+            scored = kept
         return RecallReport(
-            query=query, results=scored[:limit], considered=len(pool), requests=len(batches),
-            input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000,
+            query=query, results=scored[:limit], considered=len(pool), requests=requests,
+            input_tokens=tokens, latency_ms=(time.perf_counter() - t0) * 1000, validated=validated,
         )
 
     def list(self, *, statuses: Iterable[Status] | None = None, namespace: str | None = None) -> list[Memory]:
@@ -339,6 +623,11 @@ class Invalidate:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def _chunk_any(items: list[Any], size: int) -> list[list[Any]]:
+    size = max(1, size)
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def _chunk(items: list[Memory], size: int) -> list[list[Memory]]:

@@ -4,7 +4,7 @@
 
 **Agents remember. They never un-remember. invalidate fixes that.**
 
-[![tests](https://img.shields.io/badge/tests-520%20passing-2ea44f?style=flat-square)](tests)
+[![tests](https://img.shields.io/badge/tests-692%20passing-2ea44f?style=flat-square)](tests)
 [![eval](https://img.shields.io/badge/eval-89.2%25%20strict%20%C2%B7%2097.5%25%20lenient-blue?style=flat-square)](evals)
 [![false invalidations](https://img.shields.io/badge/false%20invalidations-0%20of%20157-2ea44f?style=flat-square)](evals/README.md)
 [![cost](https://img.shields.io/badge/cost-%240.00006%20per%20fact%20%C3%97%20event-8a2be2?style=flat-square)](#what-it-costs)
@@ -179,7 +179,7 @@ python evals/run_eval.py             # live: 157 cases, ~3 s, ~$0.02
 
 ## Works with the memory you already have
 
-invalidate does not replace Mem0, Chroma, LangGraph, Letta, Zep or Markdown notes. It runs in front of them through an adapter. The host keeps the data; invalidate keeps a ledger of statuses and verdicts and writes them back as metadata.
+invalidate does not replace Mem0, Chroma, Qdrant, pgvector, LangGraph, LlamaIndex, Letta, Zep, Cognee, Redis or Markdown notes. It runs in front of them through an adapter. The host keeps the data; invalidate keeps a ledger of statuses and verdicts and writes them back as metadata.
 
 ```python
 from invalidate.adapters import Governor
@@ -201,6 +201,12 @@ add = guard_add(memory, gov)                                      # user text is
 | pgvector, Pinecone, Qdrant, any vector store | `adapters.vectorstore` (four callables) | unit tests |
 | Letta (archival passages, core blocks) | `adapters.letta` | unit tests against a mock mirroring the SDK |
 | Zep / Graphiti (entity edges, `invalid_at`) | `adapters.graphiti` | unit tests against a mock mirroring the SDK |
+| Qdrant | `adapters.qdrant` | live against `QdrantClient(":memory:")` 1.19 |
+| Postgres / pgvector (any DB-API connection) | `adapters.pgvector` | exact-SQL contract tests; real Postgres via `INVALIDATE_PG_DSN` |
+| LlamaIndex (`FactExtractionMemoryBlock`) | `adapters.llamaindex` | live against llama-index-core 0.14 with a mock LLM |
+| MCP memory server (`@modelcontextprotocol/server-memory` JSONL) | `adapters.mcp_memory` | live against the file format of server 0.6.3 |
+| Redis Agent Memory Server | `adapters.redis_memory` | unit tests against a mock mirroring agent-memory-client 0.14 |
+| Cognee (one dataset's data rows) | `adapters.cognee` | unit tests against a mock mirroring cognee 1.6; ledger mode plus governed search |
 
 Three modes. `flag` (default) writes an `invalidate_status` field into the host record and is reversible. `delete` removes invalidated rows from the host. `ledger` judges and logs without touching the host. Per-host limits are in [ADAPTERS.md](ADAPTERS.md) and [`docs/adapters/`](docs/adapters).
 
@@ -227,26 +233,26 @@ In practice the LLM columns are never paid. The check is skipped instead, and th
 
 ## Scaling
 
-Per event, cost is linear in the number of memories in scope. With the screening pass on:
+Checking every memory against every event is memories × events work. At 20,000 memories one event costs $0.11 and 9 seconds, so at hundreds of events a day eager checking stops making sense. invalidate does not answer that with top-k by similarity, because the event that retires "we use Postgres" is "our database of choice changed" and similarity ranks that pair low. It changes when the check runs instead.
 
-| memories in scope | one event | 500 events a day |
-|---|---|---|
-| 1,000 | $0.01, about 1 s | $5 a day |
-| 10,000 | $0.10, about 3 s | $50 a day |
-| 100,000 | $1, about 30 s | $500 a day |
+**Lazy mode.** `Invalidate(..., lazy=True)` or `Governor(..., lazy=True)`. Events are appended to a log for free. A memory is judged against the events it has not seen yet at the moment it is about to be read, in order, and its cursor moves. Cost follows what is read, not what is stored, and nothing stale reaches a prompt because nothing is served unvalidated. With an existing memory store, the host does retrieval by similarity and invalidate validates the retrieved set against the events since.
 
-Past roughly 10,000 memories per scope, or a few hundred events an hour, exhaustive checking on every event needs help. The Jev rate limit (1,200 requests a minute) is hit before the cost is.
+Measured at 20,000 memories (`scripts/scale_lazy.py`):
 
-Top-k by similarity is the wrong help. The event that retires "we use Postgres" is "our database of choice changed", and that pair ranks low on similarity. A prefilter is fine as a wide net and wrong as the judge. What matters is the net's recall, because Jev is cheap enough to judge everything the net catches.
+| path | pairs | requests | latency | cost |
+|---|---|---|---|---|
+| eager, one event against all 20,000 | 20,000 | 211 | 8.9 s | $0.110 |
+| batch ingest, ten events against all 20,000 | 199,870 | 801 | 94.5 s | $0.586 |
+| lazy read: host top-10 with 200 pending events | 2,000 | 42 | 1.5 s | $0.009 |
+| the same read again | 0 | 0 | 0 ms | $0 |
 
-What scales, in order of effect:
+**Pair screening.** Many events and many memories go into one Jev request, one short question per pair, all answered in parallel. Measured over the full 157 × 157 eval matrix: 10 events × 25 memories per request keeps 134 of 136 labelled bearing pairs at 70 tokens a pair, half the cost of one event per request. `observe_many()` uses it for batch ingest.
 
-1. **Scope in code.** Memories belong to a user, a project or a team, and an event checks only its scope. A 100,000-memory pool is usually a few hundred memories per scope.
-2. **A wide net, then Jev.** Pull the top 500 or 1,000 candidates by embedding or keyword, then screen those with Jev. Cost per event is flat at about a cent. The miss rate is measurable: run the eval with the prefilter on and count the bearing pairs it drops.
-3. **Hierarchical screening.** Group memories by kind or topic, ask Jev once per group whether the event bears on it, and expand only the groups that pass.
-4. **Leases.** Memories have a TTL. Expired memories are not checked.
+**Scope in code.** Namespaces keep one user's or team's memories apart, and most large pools are small per scope. Leases expire old memories out of the check.
 
-`observe(candidates=...)` accepts any subset, so items 1 and 2 work today. Item 3 and a published recall number for an embedding prefilter are on the roadmap.
+**A kill takes two votes.** Scale testing found the one place Jev's distractor weakness shows up: a batch of twenty near-identical memories. A contradicted or superseded verdict is re-judged with the memory alone before it is written, and disagreement means review, not death. Kills are rare, so it costs one request when something is about to die. With it on, the 20,000-memory run had one true kill, four reviews, and no false invalidations.
+
+Details, measurements and what is not done yet: [SCALING.md](SCALING.md).
 
 ## Who it is for
 
@@ -367,7 +373,7 @@ Not a memory store, a vector database, an agent or an extractor. It does not rew
 
 ## Roadmap
 
-Hierarchical screening for large pools, a measured recall number for an embedding prefilter, async client, Postgres ledger, event ingester for Slack, GitHub and Linear webhooks, a second labeled set the defaults were not tuned on, Cognee and Vercel AI SDK adapters.
+A measured recall number for an embedding prefilter, hierarchical screening for very large pools, async client, Postgres ledger, event ingester for Slack, GitHub and Linear webhooks, a second labeled set the defaults were not tuned on, Vercel AI SDK adapter.
 
 ---
 

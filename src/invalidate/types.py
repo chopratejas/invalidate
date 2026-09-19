@@ -64,6 +64,9 @@ class Memory:
     expires_at: float | None = None
     superseded_by: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    checked_seq: int = 0
+    """Sequence number of the last event this memory has been judged against (0 = never). Events with a
+    higher `seq` are pending for it; `Invalidate.validate()` drains them."""
 
     def is_expired(self, at: float | None = None) -> bool:
         return self.expires_at is not None and (at if at is not None else now()) >= self.expires_at
@@ -82,6 +85,8 @@ class Event:
     source: str = "unknown"
     created_at: float = field(default_factory=now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    seq: int = 0
+    """Monotonic position in the namespace's event log, assigned by the store on insert."""
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -130,6 +135,7 @@ class ObserveReport:
     model: str | None = None
     screened_out: int = 0  # memories dropped by the cheap bears-only screen (large pools only)
     successor: Memory | None = None  # set when remember_successor=True stored the event as a new memory
+    pending: int = 0  # memories left unjudged for this event (lazy mode / budget); validate() drains them
 
     @property
     def changed(self) -> list[Verdict]:
@@ -155,6 +161,40 @@ class ObserveReport:
         parts.append(f"{self.requests} req")
         parts.append(f"{self.latency_ms:.0f} ms")
         parts.append(f"${self.cost_usd:.5f}")
+        if self.pending:
+            parts.append(f"{self.pending} pending")
+        return ", ".join(parts)
+
+
+@dataclass
+class ValidateReport:
+    """Result of draining pending events for a set of memories (lazy mode, budgets, batch ingest)."""
+
+    memories: int  # memories validated (their checked_seq advanced)
+    events: int  # distinct events considered
+    pairs: int  # (event, memory) pairs screened
+    bearing: int  # pairs that passed the screen and got the full judgment
+    verdicts: list[Verdict]
+    requests: int
+    input_tokens: int
+    latency_ms: float
+    pending: int = 0  # memories still behind the log after this call (budget exhausted)
+    model: str | None = None
+
+    @property
+    def changed(self) -> list[Verdict]:
+        return [v for v in self.verdicts if v.changed]
+
+    @property
+    def cost_usd(self) -> float:
+        return self.input_tokens * 0.042 / 1_000_000
+
+    def summary(self) -> str:
+        parts = [f"{self.memories} memories x {self.events} events", f"{self.pairs} pairs screened",
+                 f"{self.bearing} judged", f"{len(self.changed)} changed", f"{self.requests} req",
+                 f"{self.latency_ms:.0f} ms", f"${self.cost_usd:.5f}"]
+        if self.pending:
+            parts.append(f"{self.pending} still pending")
         return ", ".join(parts)
 
 
@@ -172,6 +212,7 @@ class RecallReport:
     requests: int
     input_tokens: int
     latency_ms: float
+    validated: "ValidateReport | None" = None  # set when recall() drained pending events for its candidates
 
     @property
     def memories(self) -> list[Memory]:

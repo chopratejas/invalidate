@@ -22,6 +22,10 @@ class Store(Protocol):
     def list_events(self, namespace: str | None = None, limit: int | None = None) -> list[Event]: ...
     def add_verdicts(self, verdicts: Iterable[Verdict]) -> None: ...
     def list_verdicts(self, memory_id: str | None = None, event_id: str | None = None) -> list[Verdict]: ...
+    def max_seq(self, namespace: str) -> int: ...
+    def list_events_after(self, namespace: str, after_seq: int, limit: int | None = None) -> list[Event]: ...
+    def set_checked_seq(self, memory_ids: Iterable[str], seq: int) -> None: ...
+    def count_pending(self, namespace: str, statuses: Iterable[Status]) -> int: ...
     def close(self) -> None: ...
 
 
@@ -39,7 +43,8 @@ CREATE TABLE IF NOT EXISTS memories (
   last_checked REAL,
   expires_at REAL,
   superseded_by TEXT,
-  metadata TEXT NOT NULL DEFAULT '{}'
+  metadata TEXT NOT NULL DEFAULT '{}',
+  checked_seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS memories_ns_status ON memories(namespace, status);
 
@@ -49,7 +54,8 @@ CREATE TABLE IF NOT EXISTS events (
   text TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'unknown',
   created_at REAL NOT NULL,
-  metadata TEXT NOT NULL DEFAULT '{}'
+  metadata TEXT NOT NULL DEFAULT '{}',
+  seq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS verdicts (
@@ -92,16 +98,28 @@ class SQLiteStore:
         for col in ("directive", "partial"):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} REAL NOT NULL DEFAULT 0")
+        mcols = {r["name"] for r in self._conn.execute("PRAGMA table_info(memories)")}
+        if "checked_seq" not in mcols:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN checked_seq INTEGER NOT NULL DEFAULT 0")
+        ecols = {r["name"] for r in self._conn.execute("PRAGMA table_info(events)")}
+        if "seq" not in ecols:
+            self._conn.execute("ALTER TABLE events ADD COLUMN seq INTEGER NOT NULL DEFAULT 0")
+            # Number the existing log in arrival order so old databases keep a consistent cursor.
+            self._conn.execute(
+                "UPDATE events SET seq = (SELECT COUNT(*) FROM events e2 WHERE e2.namespace = events.namespace"
+                " AND (e2.created_at < events.created_at OR (e2.created_at = events.created_at AND e2.rowid <= events.rowid)))"
+            )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS events_ns_seq ON events(namespace, seq)")
 
     # -- memories -----------------------------------------------------------
     def add_memory(self, m: Memory) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO memories (id, namespace, fact, kind, source, status, p_true, created_at, updated_at,"
-                " last_checked, expires_at, superseded_by, metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " last_checked, expires_at, superseded_by, metadata, checked_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     m.id, m.namespace, m.fact, m.kind, m.source, m.status.value, m.p_true, m.created_at,
-                    m.updated_at, m.last_checked, m.expires_at, m.superseded_by, json.dumps(m.metadata),
+                    m.updated_at, m.last_checked, m.expires_at, m.superseded_by, json.dumps(m.metadata), m.checked_seq,
                 ),
             )
 
@@ -114,10 +132,10 @@ class SQLiteStore:
         with self._lock:
             self._conn.execute(
                 "UPDATE memories SET namespace=?, fact=?, kind=?, source=?, status=?, p_true=?, updated_at=?,"
-                " last_checked=?, expires_at=?, superseded_by=?, metadata=? WHERE id=?",
+                " last_checked=?, expires_at=?, superseded_by=?, metadata=?, checked_seq=? WHERE id=?",
                 (
                     m.namespace, m.fact, m.kind, m.source, m.status.value, m.p_true, m.updated_at,
-                    m.last_checked, m.expires_at, m.superseded_by, json.dumps(m.metadata), m.id,
+                    m.last_checked, m.expires_at, m.superseded_by, json.dumps(m.metadata), m.checked_seq, m.id,
                 ),
             )
 
@@ -148,11 +166,53 @@ class SQLiteStore:
 
     # -- events ---------------------------------------------------------------
     def add_event(self, e: Event) -> None:
+        """Insert and assign the next `seq` in the event's namespace (written back onto `e`)."""
         with self._lock:
+            row = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events WHERE namespace = ?", (e.namespace,)).fetchone()
+            e.seq = int(row[0]) + 1
             self._conn.execute(
-                "INSERT INTO events (id, namespace, text, source, created_at, metadata) VALUES (?,?,?,?,?,?)",
-                (e.id, e.namespace, e.text, e.source, e.created_at, json.dumps(e.metadata)),
+                "INSERT INTO events (id, namespace, text, source, created_at, metadata, seq) VALUES (?,?,?,?,?,?,?)",
+                (e.id, e.namespace, e.text, e.source, e.created_at, json.dumps(e.metadata), e.seq),
             )
+
+    def max_seq(self, namespace: str) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events WHERE namespace = ?", (namespace,)).fetchone()
+        return int(row[0])
+
+    def list_events_after(self, namespace: str, after_seq: int, limit: int | None = None) -> list[Event]:
+        sql = "SELECT * FROM events WHERE namespace = ? AND seq > ? ORDER BY seq ASC"
+        args: list[Any] = [namespace, after_seq]
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [_row_to_event(r) for r in rows]
+
+    def set_checked_seq(self, memory_ids: Iterable[str], seq: int) -> None:
+        ids = list(memory_ids)
+        if not ids:
+            return
+        with self._lock:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                self._conn.execute(
+                    f"UPDATE memories SET checked_seq = ? WHERE id IN ({','.join('?' * len(chunk))}) AND checked_seq < ?",
+                    [seq, *chunk, seq],
+                )
+
+    def count_pending(self, namespace: str, statuses: Iterable[Status]) -> int:
+        vals = [s.value for s in statuses]
+        if not vals:
+            return 0
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) FROM memories WHERE namespace = ? AND status IN ({','.join('?' * len(vals))})"
+                " AND checked_seq < (SELECT COALESCE(MAX(seq), 0) FROM events WHERE namespace = ?)",
+                [namespace, *vals, namespace],
+            ).fetchone()
+        return int(row[0])
 
     def get_event(self, event_id: str) -> Event | None:
         with self._lock:
@@ -219,14 +279,14 @@ def _row_to_memory(r: sqlite3.Row) -> Memory:
         id=r["id"], namespace=r["namespace"], fact=r["fact"], kind=r["kind"], source=r["source"],
         status=Status(r["status"]), p_true=r["p_true"], created_at=r["created_at"], updated_at=r["updated_at"],
         last_checked=r["last_checked"], expires_at=r["expires_at"], superseded_by=r["superseded_by"],
-        metadata=json.loads(r["metadata"] or "{}"),
+        metadata=json.loads(r["metadata"] or "{}"), checked_seq=int(r["checked_seq"] or 0),
     )
 
 
 def _row_to_event(r: sqlite3.Row) -> Event:
     return Event(
         id=r["id"], namespace=r["namespace"], text=r["text"], source=r["source"], created_at=r["created_at"],
-        metadata=json.loads(r["metadata"] or "{}"),
+        metadata=json.loads(r["metadata"] or "{}"), seq=int(r["seq"] or 0),
     )
 
 

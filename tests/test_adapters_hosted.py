@@ -375,7 +375,7 @@ class TestMem0:
         assert gov.status_of(old) is Status.SUPERSEDED
         assert m.rows[old]["metadata"]["invalidate_status"] == "superseded"
         assert gov.status_of(out["results"][1]["id"]) is Status.ACTIVE  # synced after the add
-        assert [e.text for e, _ in fake.observe_calls] == ["we migrated to sqlite"]
+        assert {e.text for e, _ in fake.observe_calls} == {"we migrated to sqlite"}
 
     def test_user_texts_shapes(self):
         assert user_texts("hi") == ["hi"]

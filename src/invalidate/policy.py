@@ -48,6 +48,12 @@ class Policy:
     relevance_min: float = 0.5
     """recall(): minimum relevance probability to return a memory."""
 
+    second_opinion: bool = True
+    """A contradicted/superseded verdict is re-judged with the memory alone in the state before it is written.
+    If the clean-context vote disagrees, the memory goes to needs_review instead of dying. Batches of
+    near-identical memories (twenty facts about the same service) are the one place Jev's distractor weakness
+    showed up in scale tests (scripts/scale_lazy.py); kills are rare, so this costs one request per kill."""
+
     # --- transition rules --------------------------------------------------
     judge_statuses: frozenset[Status] = field(
         default_factory=lambda: frozenset({Status.ACTIVE, Status.NEEDS_REVIEW, Status.FROZEN})
@@ -77,6 +83,24 @@ class Policy:
 
     screen_min: float = 0.3
     """Screen threshold; deliberately looser than bears_min so the screen only drops clear non-matches."""
+
+    # --- pair screening (many events x many memories in one request) ------------
+    pair_events: int = 10
+    """Events per pair-screen request. Used by validate() and observe_many(). evals/screen_matrix.py:
+    10 x 25 keeps 134/136 labelled bearing pairs at pair_min 0.2 (136/136 at 0.15) at 70 tokens per pair;
+    5 x 100 drops to 129/136, so keep the memory side small and the event side wide."""
+
+    pair_memories: int = 25
+    """Memories per pair-screen request."""
+
+    pair_min: float = 0.2
+    """Pair-screen threshold. Lower than screen_min because the pair question is stricter (fewer
+    unrelated pairs pass) and the full judgment runs after it anyway."""
+
+    lazy: bool = False
+    """When True, observe() only appends the event to the log and judges nothing; memories are judged
+    against their pending events when they are next read (recall(validate=True), Governor.filter) or by
+    validate()/sweep in the background. Cost then scales with what is used, not with what is stored."""
 
     def dispose(self, v: Votes) -> Disposition:
         if v.bears < self.bears_min:

@@ -17,7 +17,7 @@ from ..engine import Invalidate
 from ..judge import Judge
 from ..policy import Policy
 from ..store import Store
-from ..types import Disposition, Event, Memory, ObserveReport, RecallReport, Status, Verdict, now
+from ..types import Disposition, Event, Memory, ObserveReport, RecallReport, Status, ValidateReport, Verdict, now
 
 LIVE = frozenset({Status.ACTIVE, Status.NEEDS_REVIEW, Status.FROZEN})
 DEAD = frozenset({Status.CONTRADICTED, Status.SUPERSEDED})
@@ -140,16 +140,24 @@ class Governor:
         judge: Judge | None = None,
         namespace: str | None = None,
         api_key: str | None = None,
+        lazy: bool | None = None,
     ) -> None:
+        """`lazy=True`: observe() only appends to the event log; the memories your host returns are judged
+        against their pending events inside filter() before they reach the prompt (and by validate() in the
+        background). Cost then scales with what is read, not with what is stored. See SCALING.md."""
         if mode not in self.MODES:
             raise ValueError(f"mode must be one of {self.MODES}")
         self.adapter = adapter
         self.mode = mode
         self.successors = successors
         self.namespace = namespace or f"host:{adapter.name}"
-        self.mem = Invalidate(db, judge=judge, policy=policy, namespace=self.namespace, api_key=api_key)
+        self.mem = Invalidate(db, judge=judge, policy=policy, namespace=self.namespace, api_key=api_key, lazy=lazy)
         self._pushes: list[Push] = []
         self.mem.on_transition = self._on_transition
+
+    @property
+    def lazy(self) -> bool:
+        return self.mem.policy.lazy
 
     # -- ids ----------------------------------------------------------------------
     def our_id(self, host_id: str) -> str:
@@ -223,6 +231,62 @@ class Governor:
                         self.mem.supersede(v.memory_id, by=succ.id)
         return GovernorReport(report=report, pushes=list(self._pushes), successor_host_id=successor_host_id)
 
+    def observe_many(self, texts: Iterable[str], *, source: str = "unknown") -> GovernorReport:
+        """Batch ingest: append every event, then (unless lazy) judge the pool against all of them in one pass
+        (many events x many memories per Jev request). Pushes flags/deletes/successors like observe()."""
+        self._pushes = []
+        events, rep = self.mem.observe_many(texts, source=source, remember_successor=False)
+        if rep is not None:
+            self._push_successors(rep.verdicts)
+        first = events[0] if events else Event(text="", namespace=self.namespace)
+        report = ObserveReport(event=first, verdicts=rep.verdicts if rep else [], judged=rep.memories if rep else 0,
+                               skipped=0, requests=rep.requests if rep else 0, input_tokens=rep.input_tokens if rep else 0,
+                               latency_ms=rep.latency_ms if rep else 0.0, pending=0 if rep else self.mem.pending())
+        return GovernorReport(report=report, pushes=list(self._pushes), successor_host_id=None)
+
+    def validate(self, host_ids: Iterable[str] | None = None, *, budget_requests: int | None = None) -> ValidateReport:
+        """Judge memories against the events they have not seen yet and push the outcomes to the host.
+        `host_ids=None` drains every memory that is behind the log (use `budget_requests` from a background job)."""
+        self._pushes = []
+        mems = None
+        if host_ids is not None:
+            mems = [m for m in (self.mem.store.get_memory(self.our_id(h)) for h in host_ids) if m is not None]
+        rep = self.mem.validate(mems, budget_requests=budget_requests)
+        self._push_successors(rep.verdicts)
+        return rep
+
+    def _push_successors(self, verdicts: list[Verdict]) -> None:
+        """After validate()/observe_many(): insert one verbatim successor per superseding event into the host."""
+        if not self.successors or self.mode == "ledger":
+            return
+        insert = getattr(self.adapter, "insert", None)
+        if insert is None:
+            return
+        by_event: dict[str, list[Verdict]] = {}
+        for v in verdicts:
+            if v.changed and v.to_status is Status.SUPERSEDED:
+                by_event.setdefault(v.event_id, []).append(v)
+        for eid, sup in by_event.items():
+            e = self.mem.store.get_event(eid)
+            if e is None:
+                continue
+            try:
+                hid = insert(e.text, e.source, {"invalidate_supersedes": [self.host_id(self.mem.get(v.memory_id)) for v in sup],
+                                                "invalidate_event_id": e.id})
+                self._pushes.append(Push(hid or "", "insert", Status.ACTIVE))
+            except Exception as ex:  # noqa: BLE001
+                self._pushes.append(Push("", "insert", Status.ACTIVE, error=repr(ex)))
+                continue
+            if hid:
+                succ = self.mem.store.get_memory(self.our_id(hid))
+                if succ is None:
+                    succ = self.mem.remember(
+                        e.text, source=e.source, id=self.our_id(hid),
+                        metadata={"host": self.adapter.name, "host_id": hid, "host_hash": _h(e.text), "event_id": e.id},
+                    )
+                for v in sup:
+                    self.mem.supersede(v.memory_id, by=succ.id)
+
     def _on_transition(self, m: Memory, v: Verdict) -> None:
         if self.mode == "ledger":
             return
@@ -267,10 +331,20 @@ class Governor:
     def review(self) -> list[Memory]:
         return self.mem.list(statuses=[Status.NEEDS_REVIEW])
 
-    def filter(self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = False) -> list[Any]:
+    def filter(
+        self, results: Iterable[Any], *, id_of: Callable[[Any], str], include_review: bool = False,
+        validate: bool | None = None,
+    ) -> list[Any]:
         """Drop host results whose memory is dead or under review. Unknown ids pass through.
         Reviewed memories are hidden by default: a fact flagged for a human should not reach the model
-        until the human decides (`keep()` or `forget()`). Pass include_review=True to serve them anyway."""
+        until the human decides (`keep()` or `forget()`). Pass include_review=True to serve them anyway.
+        `validate=True` (default in lazy mode) first judges these results against the events they have not
+        seen yet, so a stale memory is caught on the way to the prompt even if observe() never judged it."""
+        results = list(results)
+        if validate is None:
+            validate = self.lazy
+        if validate and results:
+            self.validate([str(id_of(r)) for r in results])
         hide = set(self.dead_ids())
         if not include_review:
             hide |= {self.host_id(m) for m in self.review()}

@@ -23,6 +23,7 @@ HYPOTHETICAL = "hypothetical"
 DIRECTIVE = "directive"
 PARTIAL = "partial"
 SCREEN = "screen"
+PAIR = "pair"
 RELEVANT = "relevant"
 
 
@@ -227,6 +228,29 @@ def screen_questions(n: int) -> dict[str, Noul]:
         )
         for i in range(n)
     }
+
+
+def pair_state(events: list[Event], memories: list[Memory]) -> dict[str, Any]:
+    """Many events x many memories in one request. Jev reads the state once; every pair question runs in parallel."""
+    return {"events": [event_view(e) for e in events], "memories": [memory_view(m) for m in memories]}
+
+
+def pair_question(j: int, i: int) -> Noul:
+    """The pair screen. Short on purpose: it is repeated once per (event, memory) pair and the question text is
+    what the pair costs (about 60 tokens). evals/screen_matrix.py measured 10 events x 25 memories per request
+    at 134/136 labelled bearing pairs kept (threshold 0.2), 70 tokens per pair, 263 ms per request."""
+    return Noul(
+        instructions=f"Is `events[{j}].text` about the same subject as `memories[{i}].fact`?",
+        criteria=NoulCriteria(
+            true="Same thing, entity, setting, or preference, whether or not they agree",
+            false="A different subject",
+        ),
+    )
+
+
+def pair_questions(pairs: list[tuple[int, int]]) -> dict[str, Noul]:
+    """One question per requested (event index, memory index) pair. Ids are `pair_{j}_{i}`."""
+    return {f"{PAIR}_{j}_{i}": pair_question(j, i) for j, i in pairs}
 
 
 def recall_state(query: str, memories: list[Memory]) -> dict[str, Any]:

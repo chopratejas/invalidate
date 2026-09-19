@@ -30,12 +30,17 @@ langgraph = ["langgraph>=0.2"]
 mem0 = ["mem0ai>=0.1"]
 letta = ["letta-client>=0.1"]
 graphiti = ["graphiti-core>=0.3"]
+qdrant = ["qdrant-client>=1.12"]
+pgvector = ["psycopg[binary]>=3.1"]
+llamaindex = ["llama-index-core>=0.12"]
+redis-memory = ["agent-memory-client>=0.14"]
+cognee = ["cognee>=1.6"]
 
 [project.scripts]
 invalidate = "invalidate.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/tejas/invalidate"
+Homepage = "https://github.com/chopratejas/invalidate"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/invalidate"]

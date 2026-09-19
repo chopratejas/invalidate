@@ -8,7 +8,7 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]" chromadb langgraph
+      - run: pip install -e ".[dev]" chromadb langgraph qdrant-client llama-index-core
       - run: ./scripts/check_secrets.sh
       - run: pytest -q
       - run: python evals/run_eval.py --dry-run --no-sweep | head -12

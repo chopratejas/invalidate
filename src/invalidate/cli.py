@@ -153,13 +153,18 @@ def cmd_remember(mem: Invalidate, a: argparse.Namespace) -> None:
 def cmd_observe(mem: Invalidate, a: argparse.Namespace) -> None:
     before = {m.id: m for m in mem.list()}
     t0 = time.perf_counter()
-    rep = mem.observe(a.text, source=a.source, dry_run=a.dry_run, remember_successor=a.remember_successor)
+    rep = mem.observe(a.text, source=a.source, dry_run=a.dry_run, remember_successor=a.remember_successor,
+                      defer=True if a.defer else None)
     wall = (time.perf_counter() - t0) * 1000
     if a.json:
         return emit({"event": rep.event, "dry_run": a.dry_run, "judged": rep.judged, "skipped": rep.skipped,
                      "requests": rep.requests, "input_tokens": rep.input_tokens, "latency_ms": rep.latency_ms,
                      "cost_usd": rep.cost_usd, "model": rep.model, "successor": rep.successor,
-                     "verdicts": rep.verdicts})
+                     "verdicts": rep.verdicts, "pending": rep.pending})
+    if rep.judged == 0 and rep.pending:
+        print(f"appended event {paint(rep.event.id, 'dim')} (seq {rep.event.seq}); {rep.pending} memories pending. "
+              f"Run `invalidate validate` or recall to judge them.")
+        return
     print_flips(rep, before, wall, a.dry_run)
     if rep.successor is not None:
         print(f"  + remembered successor {paint(rep.successor.id, 'dim')}  {status_word(rep.successor.status)}  "
@@ -167,7 +172,7 @@ def cmd_observe(mem: Invalidate, a: argparse.Namespace) -> None:
 
 
 def cmd_recall(mem: Invalidate, a: argparse.Namespace) -> None:
-    rep = mem.recall(a.query, limit=a.limit, include_review=a.include_review)
+    rep = mem.recall(a.query, limit=a.limit, include_review=a.include_review, validate=True if a.validate else None)
     if a.json:
         return emit({"query": rep.query, "considered": rep.considered, "requests": rep.requests,
                      "input_tokens": rep.input_tokens, "latency_ms": rep.latency_ms, "cost_usd": rep.cost_usd,
@@ -229,6 +234,28 @@ def _status_cmd(fn_name: str) -> Callable[[Invalidate, argparse.Namespace], None
             return emit(m.to_dict())
         print(f"{paint(m.id, 'bold')}  {status_word(m.status)}" + (f"  by {m.superseded_by}" if m.superseded_by else ""))
     return run
+
+
+def cmd_validate(mem: Invalidate, a: argparse.Namespace) -> None:
+    before = {m.id: m for m in mem.list()}
+    rep = mem.validate(budget_requests=a.budget)
+    if a.json:
+        return emit({"memories": rep.memories, "events": rep.events, "pairs": rep.pairs, "bearing": rep.bearing,
+                     "requests": rep.requests, "input_tokens": rep.input_tokens, "latency_ms": rep.latency_ms,
+                     "cost_usd": rep.cost_usd, "pending": rep.pending, "verdicts": rep.verdicts})
+    print(rep.summary())
+    for v in rep.changed:
+        m = mem.get(v.memory_id)
+        old = before.get(v.memory_id)
+        print(f"  {status_word(v.from_status)} -> {status_word(v.to_status)}  {m.fact}"
+              + (f"  ({v.disposition.value}, still true {v.votes.still_true:.2f})"))
+
+
+def cmd_pending(mem: Invalidate, a: argparse.Namespace) -> None:
+    n = mem.pending()
+    if a.json:
+        return emit({"pending": n, "max_seq": mem.store.max_seq(mem.namespace)})
+    print(f"{n} memories behind the event log (log at seq {mem.store.max_seq(mem.namespace)})")
 
 
 def cmd_sweep(mem: Invalidate, a: argparse.Namespace) -> None:
@@ -365,6 +392,7 @@ COMMANDS: dict[str, Callable[[Invalidate, argparse.Namespace], None]] = {
     "remember": cmd_remember, "observe": cmd_observe, "recall": cmd_recall, "ls": cmd_ls, "show": cmd_show,
     "freeze": _status_cmd("freeze"), "unfreeze": _status_cmd("unfreeze"), "restore": _status_cmd("restore"),
     "forget": _status_cmd("forget"), "supersede": _status_cmd("supersede"), "sweep": cmd_sweep, "events": cmd_events,
+    "validate": cmd_validate, "pending": cmd_pending,
 }
 
 
@@ -400,11 +428,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="judge and report, write nothing")
     s.add_argument("--remember-successor", action="store_true",
                    help="if the event supersedes memories, store its text verbatim as their successor")
+    s.add_argument("--defer", action="store_true",
+                   help="lazy: append the event to the log only; judge memories at recall or `validate` time")
 
     s = add("recall", "rank live memories by relevance to a query")
     s.add_argument("query")
     s.add_argument("--limit", type=int, default=10)
     s.add_argument("--include-review", action="store_true", help="also consider needs_review memories")
+    s.add_argument("--validate", action="store_true",
+                   help="judge the top candidates against events they have not seen yet before returning them")
+
+    s = add("validate", "judge memories against every event they have not seen yet (lazy mode / batch ingest)")
+    s.add_argument("--budget", type=int, metavar="REQUESTS", help="cap Jev requests; the rest stays pending")
+    add("pending", "how many memories are behind the event log")
 
     s = add("ls", "list memories (hides deleted/expired by default)")
     s.add_argument("--status", metavar="A,B", help="comma-separated: " + ",".join(x.value for x in Status))

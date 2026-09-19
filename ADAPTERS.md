@@ -67,8 +67,21 @@ and a timestamp. `Reason.as_metadata()` is what metadata-capable hosts get;
 | Mem0 (OSS and platform) | `adapters.mem0` | get_all | metadata (see limits) | delete | add(infer=False) | live (OSS 2.1.0) |
 | Letta | `adapters.letta` | archival passages, block lines | note passage / annotated block line | passage or line removed | passage | signatures mirrored |
 | Zep / Graphiti | `adapters.graphiti` | entity edges' `fact` | `invalid_at` set | same as flag (history kept) | add_episode | signatures mirrored |
+| Qdrant | `adapters.qdrant` | client.scroll | set_payload (merged) | client.delete | client.upsert (needs `vector_fn`) | live (`:memory:`, 1.19.1) |
+| Postgres / pgvector (any DB-API conn) | `adapters.pgvector` | keyset SELECT by id | `metadata = COALESCE(metadata,'{}') \|\| receipt::jsonb` | DELETE row | INSERT ... RETURNING id (embedding via `vector_fn`) | exact-SQL fake; real PG via `INVALIDATE_PG_DSN` |
+| LlamaIndex (FactExtractionMemoryBlock) | `adapters.llamaindex` | block.facts, content-addressed ids | fact moved out of the list into `adapter.hidden` | fact removed | fact appended | live (llama-index-core 0.14.24, MockLLM) |
+| MCP memory server (`@modelcontextprotocol/server-memory` JSONL) | `adapters.mcp_memory` | observations + relations | marker suffix inside the observation string | observation / relation removed | observation appended to an entity | live (server 0.6.3 file format) |
+| Redis Agent Memory Server | `adapters.redis_memory` | search_long_term_memory paged | `invalidate:*` marker topics (no metadata field) | delete_long_term_memories | create_long_term_memory verbatim, dedup off | signatures mirrored (agent-memory-client 0.14.0) |
+| Cognee | `adapters.cognee` | one dataset's Data rows (verbatim text) | ledger-only by default; opt-in `flag_in_host=True` writes `external_metadata` | datasets.delete_data | cognee.add(DataItem) verbatim, no cognify | signatures mirrored (cognee 1.6.0); governed_search filters by document_id |
 
 Per-adapter notes live in `docs/adapters/`.
+
+## Lazy mode through the layer
+
+`Governor(adapter, db, lazy=True)`: `observe()` appends events only; `filter(results, id_of=...)` validates
+exactly the results your host returned against the events they have not seen, pushes flags or deletes for
+the ones that died, and hides them. `validate(budget_requests=N)` drains backlogs from a background job;
+`observe_many(texts)` is the batch-ingest path. See [SCALING.md](SCALING.md).
 
 ## Why a layer and not a feature of each host
 
