@@ -104,7 +104,7 @@ def test_observe_empty_memories_short_circuits_without_calling_client():
     client = StubClient({})
     judge = JevJudge(client=client)
     batch = judge.observe(Event(text="e"), [])
-    assert batch == ObserveBatch([], JudgeResult(0, None))
+    assert batch == ObserveBatch([], JudgeResult(0, None), requests=0)
     assert client.calls == []
 
 
@@ -132,6 +132,7 @@ def test_staged_observe_asks_replaces_and_partial_only_for_low_still_true():
     assert [v.partial for v in batch.votes] == [0.0, 0.4, 0.4, 0.0]
     assert [v.still_true for v in batch.votes] == still
     assert batch.usage.input_tokens == 200  # both requests counted
+    assert batch.requests == 2  # and the batch says it made two calls
 
 
 def test_staged_observe_skips_stage_two_when_nothing_is_low():
@@ -310,3 +311,23 @@ def test_run_batches_propagates_exceptions_concurrent():
 def test_run_batches_results_match_input_length_and_content():
     out = run_batches(lambda b: sum(b), [[1, 2], [3], [4, 5, 6], []], max_workers=2)
     assert out == [3, 3, 15, 0]
+
+
+def test_observe_reports_the_number_of_calls_it_made():
+    """A staged batch is one request or two; an unstaged one is always one."""
+    base = {Q.HYPOTHETICAL: 0.0, Q.DIRECTIVE: 0.0, f"{Q.BEARS}_0": 0.9,
+            f"{Q.REPLACES}_0": 0.7, f"{Q.PARTIAL}_0": 0.4}
+
+    unstaged = JevJudge(client=StubClient({**base, f"{Q.STILL_TRUE}_0": 0.1}), staged=False)
+    assert unstaged.observe(Event(text="e"), _mems(1)).requests == 1
+
+    # still_true above stage_below: stage 2 is not needed
+    high = JevJudge(client=StubClient({**base, f"{Q.STILL_TRUE}_0": 0.95}))
+    assert high.observe(Event(text="e"), _mems(1)).requests == 1
+
+    # still_true low enough that the policy will read replaces/partial: stage 2 runs
+    low = JevJudge(client=StubClient({**base, f"{Q.STILL_TRUE}_0": 0.05}))
+    batch = low.observe(Event(text="e"), _mems(1))
+    assert batch.requests == 2
+
+    assert JevJudge(client=StubClient({})).observe(Event(text="e"), []).requests == 0

@@ -33,6 +33,8 @@ class FakeJudge:
     default_votes: Votes = UNRELATED
     default_relevance: float = 0.0
     tokens_per_call: int = 7
+    # HTTP calls a single observe() batch reports, as a staged judge would (1 or 2).
+    requests_per_call: int = 1
     model: str | None = "fake-jev"
     observe_calls: list[tuple[Event, list[Memory]]] = field(default_factory=list)
     recall_calls: list[tuple[str, list[Memory]]] = field(default_factory=list)
@@ -55,9 +57,9 @@ class FakeJudge:
         with self._lock:
             self.observe_calls.append((event, list(memories)))
         if not memories:
-            return ObserveBatch([], JudgeResult(0, None))
+            return ObserveBatch([], JudgeResult(0, None), requests=0)
         votes = [self._lookup(self.votes, m, self.default_votes) for m in memories]
-        return ObserveBatch(votes, JudgeResult(self.tokens_per_call, self.model))
+        return ObserveBatch(votes, JudgeResult(self.tokens_per_call, self.model), requests=self.requests_per_call)
 
     def screen_pairs(self, events: list[Event], memories: list[Memory], pairs: list[tuple[int, int]]) -> PairBatch:
         """Bears vote of the scripted Votes for each pair (event-independent, like the scripted observe())."""

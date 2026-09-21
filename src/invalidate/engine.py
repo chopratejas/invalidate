@@ -204,10 +204,12 @@ class Invalidate:
 
         verdicts: list[Verdict] = []
         pairs: list[tuple[Memory, Verdict]] = []
+        n_observe_requests = 0
         for batch, res in zip(batches, results):
             if len(res.votes) != len(batch):
                 raise JudgeMisaligned(f"judge returned {len(res.votes)} votes for {len(batch)} memories")
             tokens += res.usage.input_tokens
+            n_observe_requests += res.requests
             model = res.usage.model or model
             for m, votes in zip(batch, res.votes):
                 d = self.policy.dispose(votes)
@@ -254,7 +256,7 @@ class Invalidate:
         return ObserveReport(
             successor=successor,
             event=event, verdicts=verdicts, judged=len(judgeable), skipped=skipped, screened_out=screened_out,
-            requests=len(batches) + n_screen_requests + n_second, input_tokens=tokens,
+            requests=n_observe_requests + n_screen_requests + n_second, input_tokens=tokens,
             latency_ms=(time.perf_counter() - t0) * 1000, model=model,
         )
 
@@ -265,12 +267,15 @@ class Invalidate:
         results = run_batches(lambda em: self.judge.observe(em[0], [em[1]]), kills, self.policy.max_workers)
         votes = []
         tokens = 0
+        requests = 0
         for (e, m), res in zip(kills, results):
             if len(res.votes) != 1:
                 raise JudgeMisaligned(f"second opinion returned {len(res.votes)} votes for 1 memory")
             votes.append(res.votes[0])
             tokens += res.usage.input_tokens
-        return votes, len(kills), tokens
+            # Each second opinion is itself an observe(), so it can be two calls when staged.
+            requests += res.requests
+        return votes, requests, tokens
 
     def _agrees(self, votes: Any, status: Status, source: str) -> bool:
         d = self.policy.dispose(votes)
@@ -415,9 +420,9 @@ class Invalidate:
                 raise JudgeMisaligned(f"judge returned {len(res.votes)} votes for {len(b)} memories")
             tokens += res.usage.input_tokens
             model = res.usage.model or model
+            requests += res.requests
             for m, votes in zip(b, res.votes):
                 raw.setdefault(m.id, []).append((e, votes))
-        requests += len(full_jobs)
 
         # ---- apply, in event order per memory ----------------------------------------------------------------
         def chain(m: Memory, overrides: dict[str, Any]) -> list[Verdict]:

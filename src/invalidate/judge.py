@@ -26,6 +26,9 @@ class JudgeResult:
 class ObserveBatch:
     votes: list[Votes]
     usage: JudgeResult
+    # HTTP calls this batch actually made: 1 unstaged, 1 or 2 staged, 0 for an empty batch.
+    # The caller reports request counts, and a staged batch is not always one request.
+    requests: int = 1
 
 
 @dataclass
@@ -102,12 +105,12 @@ class JevJudge:
 
     def observe(self, event: Event, memories: list[Memory]) -> ObserveBatch:
         if not memories:
-            return ObserveBatch([], JudgeResult(0, None))
+            return ObserveBatch([], JudgeResult(0, None), requests=0)
         state = Q.observe_state(event, memories)
         n = len(memories)
         if not self.staged:
             resp = self._call(state, Q.observe_questions(n))
-            return ObserveBatch(self._votes(resp.answers, n, set(range(n))), _usage(resp))
+            return ObserveBatch(self._votes(resp.answers, n, set(range(n))), _usage(resp), requests=1)
         # Stage 1: everything except replaces/partial. Stage 2: those two, only where still_true is low enough
         # for the policy to read them. Same votes as one request (answers are independent), fewer tokens.
         r1 = self._call(state, Q.observe_questions_stage1(n))
@@ -115,11 +118,13 @@ class JevJudge:
         tokens = _usage(r1).input_tokens
         model = getattr(r1, "model", None)
         low = [i for i in range(n) if _p(a[f"{Q.STILL_TRUE}_{i}"]) <= self.stage_below]
+        requests = 1
         if low:
             r2 = self._call(state, Q.observe_questions_stage2(low))
             a.update(r2.answers)
             tokens += _usage(r2).input_tokens
-        return ObserveBatch(self._votes(a, n, set(low)), JudgeResult(tokens, model))
+            requests = 2
+        return ObserveBatch(self._votes(a, n, set(low)), JudgeResult(tokens, model), requests=requests)
 
     @staticmethod
     def _votes(a: Any, n: int, with_stage2: set[int]) -> list[Votes]:

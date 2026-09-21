@@ -74,8 +74,10 @@ Locally:
 **1. Install**
 
 ```bash
-pip install invalidate
+pip install git+https://github.com/chopratejas/invalidate
 ```
+
+(There is no PyPI release yet, so `pip install invalidate` does not resolve.)
 
 **2. Set a TypeSafe API key** from [console.typesafe.ai](https://console.typesafe.ai/):
 
@@ -254,7 +256,7 @@ Measured at 20,000 memories (`scripts/scale_lazy.py`):
 
 **Scope in code.** Namespaces keep one user's or team's memories apart, and most large pools are small per scope. Leases expire old memories out of the check. A similarity top-k is acceptable only as a wide net with measured recall: on the labelled set the top 10 finds three quarters of the memories an event bears on, the top 20% with sentence splitting finds all of them. Never as the judge.
 
-**A kill takes two votes.** Scale testing found the one place Jev's distractor weakness shows up: a batch of twenty near-identical memories. A contradicted or superseded verdict is re-judged with the memory alone before it is written, and disagreement means review, not death. Kills are rare, so it costs one request when something is about to die. With it on, the 20,000-memory run had one true kill, four reviews, and no false invalidations.
+**A kill takes two votes.** Scale testing found the one place Jev's distractor weakness shows up: a batch of twenty near-identical memories. A contradicted or superseded verdict is re-judged with the memory alone before it is written, and disagreement means review, not death. Kills are rare, so it costs one extra judgment when something is about to die — one request, or two when staging sends a second stage. With it on, the 20,000-memory run had one true kill, four reviews, and no false invalidations.
 
 Details, measurements and what is not done yet: [SCALING.md](SCALING.md).
 
