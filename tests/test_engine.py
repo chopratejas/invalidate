@@ -1179,3 +1179,14 @@ def test_observe_screens_large_pools_when_judge_supports_it(fake, make_mem):
     fake.script(x.id, CONFIRM)
     small.observe("e")
     assert calls["screen"] == []  # pool below screen_above: no screening
+
+
+def test_observe_report_counts_calls_not_batches(make_mem, fake):
+    """A staged judge can spend two requests on one batch; the report must say so."""
+    fake.requests_per_call = 2
+    inv = make_mem(Policy(batch_size=3, max_workers=1))
+    for i in range(10):
+        inv.remember(f"fact {i}")
+    report = inv.observe("e")
+    assert len(fake.observe_calls) == 4       # four batches
+    assert report.requests == 8               # each of which made two calls
